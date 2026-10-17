@@ -13,112 +13,240 @@ description: >-
 
 # Backend Code Review
 
-Review existing backend implementations and tests by tracing real entry points, facts, state changes, persistence, and side effects. Deliver an evidence-backed review report and disposition recommendations. Check compliance with established responsibilities and contracts, not a new architecture or a whole-system architecture audit. Review authority does not grant permission to modify code, data, or services.
+Review backend code, a backend diff, or its tests, and report the defects that would otherwise reach production, with few false alarms. Report a defect only when a reachable trigger breaks a located contract. Judge the code against the project's established responsibilities and contracts; do not design a new architecture.
 
-Apply this priority order: **effective requirements and evidence > security, data integrity, and business correctness > failure, concurrency, and recovery > compatibility and verification > necessary simplicity and maintainability > style preferences**. Let explicit user requirements prevail over extensions.
+Priority order: **authorization, data integrity and business correctness > failure, retry and concurrency > compatibility and deploy safety > tests > maintainability > style**. Explicit user or project requirements override this skill's defaults.
 
-## Operating Boundaries
+## Rules that always apply
 
-- **Scale by reachable risk.** Start with scope, affected input/state contracts, evidence, and disposition in Passes 1-3, 6, and 7. Use only applicable clauses. Trigger Pass 4 for persistent writes or shared mutable effects, and specialist checks in Pass 5 only when their predicates hold in the authorized impact closure. Read the matching clauses in [Risk Checks](references/risk-checks.md), not every category for every change. Cite a project risk rule or concrete affected obligation and consequence for any critical/important designation. Record relevant exclusions with reasons; unknown applicability is a coverage gap. Do not infer risk from line count or add a mechanism merely because a check names it.
-- **Map responsibilities, not implementation forms.** Interpret state owners, boundaries, and stages as responsibilities evidenced by project rules or existing code, and preserve the established architecture (DDD or any other style) in every proposed fix. Map functions, transaction scripts, immutable transitions, consumers, or storage operations accordingly, keeping repairs with their owners and respecting existing boundaries, dependency direction, and ports. Mark absent stages inapplicable. Do not introduce objects, layers, ports, or adapters merely to match this vocabulary, or block fixes solely because architecture documentation is absent.
-- **Separate review from remediation.** Report findings and required acceptance steps, identifying any necessary architecture change as a separate owner decision requiring explicit approval. Perform fixes or operational actions only under separate, applicable authorization. An unexecuted required check remains pending, not passed.
+- **Investigate read-only.** Without specific permission, do not read credentials or environment files, write to databases, or start or stop shared services. Before running a command, check what it reads, writes and cleans up; test commands often load environment files or reset data, and permission to run tests never covers resetting live or shared data. Record `git status` and diff stats before and after, and report any change you did not make.
+- **Review, do not remediate.** Change code or run operational actions only under separate, explicit permission. An unrun check is pending, not passed.
+- **Keep every fix inside the established architecture.** Keep the current boundaries, layers, dependency direction, ports and ownership, and put a repair with the code that owns the rule. A correct fix that needs an architecture change is a separate owner decision needing explicit approval, not part of the fix. Do not invent layers or ports, or block a fix for missing architecture documentation.
+- **Report edge cases, hardening and performance only when a contract covers them.** For an extreme input, an unusual stored value, a missing check or limit, or a slow path, find the contract or sourced limit that requires it; failing to rule an input out is not proof. Without one it is a suggestion, unless an authorization or data-integrity obligation requires it.
+- **Do not invent limits.** When a judgment needs an unsourced number (latency, page size, retention), name the owner who must decide and the conclusion that depends on it.
 
-## Pass 1: Establish Scope and Independent Work
+## Step 1: Map the change
 
-- **Baseline.** Identify the reviewed revision, effective requirements, superseded decisions, and comparison baseline. Separate observed state, target state, established decisions, inference, and unknowns. Accept a conclusion only when its applicable baseline is locatable. Neither dates, completion labels, current behavior, nor a design document alone proves compliance. Label attempts to change an established decision as proposals, not existing implementation violations.
-- **Scope audit.** Enumerate allowed modules, files, operations, frozen behavior, and approved exceptions. Keep the commit or diff range separate from the authorized module boundary, and check every inspected path against that boundary. Record initial and final workspace changes and change statistics, separating pre-existing changes from this review. Preserve the inspected-path list or equivalent audit record. Under a strict boundary, do not inspect or assess outside code without authorization. Record external dependencies as uncovered where necessary. Otherwise trace the authorized impact closure without silently expanding the promise.
-- **Behavior preservation.** Map every changed block to an approved requirement or necessary authorized repair. Compare outputs, rejection rules, failure order, commit effects, and side effects with the baseline. Keep functional repairs separate from structural-only work. Do not demand unchanged internal names when an adaptation is authorized.
-- **Coverage and measurable targets.** Map each promised requirement to implementation, evidence, and conclusion. Mark missing, inapplicable with reason, unexecuted, and unverifiable items. For affected quality targets, record trigger, operating conditions, object, expected response, measurable limit, and its source. If a limit is unknown, identify the owner decision and affected conclusion. Do not invent a threshold or block solely on an unquantified adjective.
-- **Independent lanes.** For multiple independently reviewable concerns, divide work by functional responsibility and record each lane's scope, entry points, contracts, focus, executor, evidence, findings, and gaps before synthesis. One bounded concern needs no manufactured lanes. Use other reviewers only when permitted. Distinguish separate lane records from separate people, and independent discovery of defects within a lane from independent verification of candidates already raised; report each separately. Record required but unavailable independent review as a pending workflow gate under the applicable user or project policy, not factual uncertainty about an otherwise demonstrated defect.
-- **Investigation safety.** Before commands, inspect implicit credential or environment-file reads, initialization, execution, cleanup, and shutdown. By default, do not read credentials or environment files, write databases, or start or stop shared services. If needed, stop that investigation and request specific authorization. Separate read-only targets from explicitly rebuildable resources, verify connection and execution-set guards, and reconcile results beyond row counts. Test permission never authorizes resetting live or shared data.
-- **Review coordination.** Separate large mechanical changes from behavior changes for inspection, without breaking atomic changes into unusable states. Follow existing response agreements and disclose known blockers and unreviewed areas promptly. Distinguish required repairs, improvements, and nonblocking details. Do not delay a sufficient change for unrelated perfection or waive a hard requirement for net improvement.
+1. Identify the revision, the requirements, and earlier review comments to re-check.
+2. Read the whole diff, then the code each changed line calls and that calls it, far enough to see the guards: middleware, decorators, interceptors, policy checks, repository filters, transaction wrappers, database constraints, callers that already validate.
+3. Name the requirement each changed block serves. A change in outputs, error codes, error order, defaults or side effects that no requirement asks for is a candidate, judged against the released behavior callers rely on.
+4. Note one line per changed entry point (endpoint, handler, job, consumer, command, migration): the caller and their identity source; what it reads and decides; each write and its transaction; each external call or publish (payment, email, HTTP, queue, cache, other service) and whether it runs before, inside or after the commit; each error handler; each schema, configuration or message-format change; the covering tests.
+5. Record what you could not see (code not given, configuration, other services) as coverage gaps. Under a strict boundary set by the user or project, do not inspect or judge code outside it.
 
-## Pass 2: Trace Inputs, Identity, and Rejection
+## Step 2: Hunt
 
-- **Server input responsibility.** Check editable input against authoritative types, shape, completeness, ranges, business facts, and required defaults. Verify that bypassing client processing or forging a claimed type cannot persist invalid data. Do not duplicate conditions already guaranteed by trusted construction or add input validation to read-only derived fields.
-- **Contract-covered edge cases.** Before reporting an extreme input, unusual stored value, or defensive omission as a defect, locate the applicable input and stage contract. Inability to exclude an input is not proof that the contract covers it. Classify uncovered hardening as a nonblocking suggestion unless an applicable security or integrity obligation establishes the requirement. Do not raise acceptance thresholds through defensive changes.
-- **Current authorization.** Resolve identity from trusted evidence and distinguish authenticated identity, effective actor, action permission, data scope, creator rules, and state rules. Check each command at its contracted authorization point. Reauthorize every synchronous business request. Buttons, client identity, and an earlier confirmation cannot authorize a write. Reuse only the same successful authorization snapshot within that request. For asynchronous commands or facts, apply the triggered authorization checks in Risk Checks rather than requiring a current interactive login. When clients attach credentials automatically, verify that an attacker-controlled context cannot submit a state-changing command with them: valid identity, permission, and legal input do not prove authentic initiation. Exercise a forged command against the existing origin, request-binding, or equivalent defense and require rejection without business effects; do not add a mechanism when existing controls demonstrably exclude the path.
-- **Stage order and forbidden calls.** Trace identity resolution, loading, structural acceptance, authorization, external facts, and writing in the required order. Use simultaneous failures to check the authoritative first error. Verify exact call budgets and zero forbidden calls, events, or writes after rejection. Do not impose a universal authorization-first error order.
-- **Write confirmation.** When confirmation controls write admission, verify server-checkable binding to the object, actor, relevant input, and current facts. Require unambiguous binding and invalidation after relevant changes. Confirmation may waive only its permitted warning, never strong validation or final guards. Do not impose credentials, one-time use, request deduplication, or commit proof on display-only confirmation.
-- **Failure semantics and collection.** Distinguish business rejection, malformed requests, programming preconditions, dependency failure, corrupt data, and concurrency failure. Verify stable identifiers, authoritative classification, and response projection without creating a category for every low-level cause. Collect independently decidable content failures in contractual order with original input positions. Stop on failures that make continued judgment unsafe. Do not confuse failure class with response channel or require every error to aggregate.
-- **Catch and cleanup.** Retain catches only for recovery, compensation, semantic translation, or necessary context owned here. Verify the original cause survives wrapping, cleanup does not overwrite the primary result, and caught pre-commit write failures cannot commit partially. Report post-commit follow-up failures separately under the delivery or recovery contract. Permit telemetry degradation, safe skipping, or isolated paths only under their complete approved conditions. Do not disguise failure as success.
+For each entry, work a section only when the entry does what its heading names, and list skipped sections in one line. Answer the section's questions in order, and before reporting a defect sign check whether a usually-correct look-alike applies. A sign or "Candidate" is not a finding until Step 3 confirms it. Do not infer risk from line count or recommend a mechanism only because this skill names it.
 
-## Pass 3: Check State, Representation, and Facts
+### 2.1 Authorization and input
 
-- **Mutation protection and stages.** Verify required guards reject an illegal externally callable mutation before applying it, including reconstruction and alternate write entries. Check the contracted failure state and change set. Verify invariants at externally visible, durable, or contract-specified stable boundaries. Do not expose internal transitional state or use this boundary rule to weaken an explicit before-assignment guard. Distinguish invalid structure, valid incompleteness, currently unsubmitable content, and corrupt storage across the stages that exist. Do not upgrade saving or copying to full submission validation.
-- **Value semantics and ownership.** Separate whole-value equality and hashing from special deduplication identity. Verify equal values hash equally. Attempt changes through constructor inputs, returned containers, mutable elements, and reused builders. Require that those changes cannot rewrite owned facts. Accept safe read-only views and immutable leaves without redundant copying. Do not assume serialization proves lossless deep copying or require copying arbitrary object graphs.
-- **Boundary translation and preservation.** Check field identity, units, encoding, defaults, and failure meaning across protocol, business, and storage representations. Keep external representations within their assigned boundaries without forcing new layers or reversing established dependencies. Distinguish missing members, explicit null, empty containers, blank text, defaults, and display values by field path. Verify actual read and whole-write round trips. Reject or preserve unsupported content rather than silently dropping it and writing back. Do not generalize one path to every same-named field or impose whole-configuration validation on state-only operations.
-- **Authoritative facts.** Verify source, identity, units, version, applicability, missing-value meaning, and the snapshot used for one decision. Do not combine incompatible versions, treat truncated candidates as complete facts, infer invalidity from a candidate miss, or turn dependency failure into legal emptiness. Keep genuinely successful empty results distinct. Leave unknown authority unresolved rather than inventing it.
-- **Success and substitutability.** Distinguish accepted, completed, and partially successful outcomes. Verify input/result correspondence, completeness, and allowed state after failure against the current contract. Require alternative implementations and decorators to accept the same legal inputs without strengthening preconditions or weakening postconditions. Do not make callers identify an implementation to repair its result. Let types and tests express simple guarantees without formal-proof rituals, and do not raise saving or copying to submission requirements.
-- **One authoritative rule.** Locate the authority for each affected business rule, lifecycle, transition, idempotent success, rejection, and error identifier. Require consistent use across entries or explicit synchronization for approved mirrors. Do not require every representation to share types or equate a display projection with command semantics.
+- Does the caller's identity come from the authenticated session or a verified token? A user ID, tenant ID or role taken from the body, query string or a client-set header is a defect; an ID naming the target object is normal.
+- For each object read or changed, where is the check that this caller may act on it (owner, tenant, role, object state)? Does it test the object actually loaded and written?
+- Does the check run before any write, publish or external call, and does a rejection stop all of them?
+- Does every entry to the same operation (batch endpoint, admin route, job, a second handler) carry the same check?
+- Is a nested child tied to the checked parent (`/orders/{orderId}/items/{itemId}` must confirm the item belongs to that order)?
+- Do lists, searches and counts apply the caller's scope before filtering, counting and paging?
+- Does the server validate type, required fields, ranges and business rules for every client-editable value? Client-side checks do not count; values the server derives or trusted construction guarantees need none.
+- With automatically sent credentials (cookies), does each state-changing request pass the project's origin or request-binding check?
+- When a contract states the error order, does the first error returned when several checks fail match it?
 
-## Pass 4: Prove Writes and Concurrent Effects
+Defect signs: lookup by ID with no owner or tenant filter; a check placed after the update; one business rule coded twice with different limits; a confirmation step not bound on the server to the object, the actor and the current state.
 
-- **Atomic write set and storage guarantees.** Enumerate the state and durable business records that must succeed together, and trace each write, session failure, and commit. Exclude discardable telemetry from promised business durability. Require all-or-nothing abort for pre-commit failures within the atomic boundary and no new business record after a missed guard. Distinguish known abort, confirmed commit, and unknown commit outcome. A lost acknowledgment or later response, notification, or cleanup failure does not prove abort. Preserve confirmed commits and use contracted follow-up or recovery; never delete committed facts to simulate rollback. Reconcile unknown outcomes through authoritative lookup or safe replay before repeating non-repeatable effects. Verify these three outcomes separately. Distinguish atomicity, isolation, acknowledgment, durability, and read visibility using actual storage guarantees, deployment settings, and matching evidence. A lock, matched predicate, acknowledgment, or temporary read cannot establish all these guarantees.
-- **Final guards.** Identify the decision read set, write set, state, structure, validity, content revision, and invariant protected by each action. Verify final effect guards cover the necessary facts, including range or absence decisions when relevant. Check actual write predicates and affected cardinality, distinguishing matched from changed records. Classify zero results by their real cause. Preserve authorized last-writer-wins behavior rather than adding universal client revision rejection.
-- **Final uniqueness.** Separate prechecks from final enforcement. For a strong uniqueness claim, verify an effective target-store constraint or equivalent serialization protocol and concurrent precheck success without duplicates. Describe precheck-only behavior as best effort. Do not add uniqueness everywhere or remove a precheck that retains a distinct responsibility.
-- **Retry attribution.** Distinguish generated collisions, other constraints, lock failures, and unknown commit results. Verify authorized causes, retry unit, bounded attempts, waiting, interruption, and transaction boundaries. End a failed attempt before retrying and retain unrelated causes. Do not treat all integrity errors as one collision, prohibit all lock retries, or copy historical delays without a current protocol.
-- **Idempotency and unknown results.** Separate target-state idempotency, content equivalence, request deduplication, internal retries, external replay, and response-loss recovery. State whether repetition may add objects, records, or side effects under the delivery contract. Use authoritative reconciliation or contract-safe replay for unknown outcomes rather than blindly repeating non-repeatable effects. If duplicate suppression is required or implemented, check its identity, input binding, concurrency, result persistence, and replay window in Risk Checks. Do not require new keys for every write.
-- **External effects.** Where external writes occur, distinguish read-only facts, reversible reservations, and irreversible effects. Check remote success with local rollback, local commit with remote failure, and remote execution with lost response. Require a recoverable delivery, lookup, compensation, or explicitly accepted-window protocol and accountable handling. Verify durable recovery and compensation failure paths in Risk Checks. Local rollback does not undo remote effects. Neither split the required atomic set nor assume a distributed transaction or delivery facility is necessary.
+Usually correct: the check lives in middleware, a decorator, a policy object, a tenant-scoped repository or a database row rule; internal jobs using the project's service identity; public read-only data.
 
-## Pass 5: Check Compatibility and Triggered Risks
+### 2.2 Reads, decisions and concurrent writes
 
-- **Existing behavior.** For each affected released behavior that existing callers depend on, bind the preservation claim to an immutable production release artifact or explicitly approved production-equivalent snapshot. Record its identity and equivalence basis; a development branch or remote reference alone is not production evidence. Compare inputs, outputs, defaults, failures, ordering, and side effects. Preserve frozen methods and carry new semantics separately. Allow same-batch internal signature migration only for non-external contracts with unchanged semantics and all callers migrated within authorization. Make production comparison a distinct acceptance item even when source or codec comparisons pass. If the baseline is unavailable, name the owner, required evidence, and mandatory comparison before merge, or before release only when applicable policy explicitly permits deferral. Do not label development-source equivalence as preserved production behavior. Assess private helpers through the observable obligations they affect, and reuse one released artifact across methods when it proves the claimed behaviors. For an initial release or a change with no production-preservation duty, use the declared review baseline and state why production comparison is inapplicable.
-- **Bidirectional compatibility.** For protocol or serialization changes, use versioned actual encoders and decoders. Cover old sender/new receiver and new sender/old receiver for both requests and responses. Assert that an old decoder skips added members where the protocol permits them, and that existing values, defaults, and failure meanings match the production baseline. Check types, identities, units, enums, unknown members, and every reachable old entry against new guards. Record versions, sample origins, results, and each deferred mandatory check. Do not invent unknown-member tolerance when the protocol instead requires a negotiated version or approved rejection.
-- **Compatibility lifetime.** Derive the required combinations from actual client lifetimes, rolling deployment, retained messages and replay, queued tasks, stored formats, and promised backup restoration. Verify both directions wherever reachable. Do not substitute deployment overlap for a longer retention promise, demand permanent compatibility, or silently discard an existing promise because current traffic is absent.
-- **Removal and dependencies.** Before removing a member or implementation, inspect authorized production, test, configuration, name-bound, and external consumers. Preserve valid reading, filtering, rejection, and regression protection in the retained carrier. Zero local calls does not prove external retirement, and text matches do not prove reachability. Do not narrow public contracts in bulk from zero local calls. Mark unknown consumers rather than preserving empty shells forever. Check direct dependency declarations, version authority, packaging, deployment, and target-runtime closure on affected artifacts. Require actual build or packaging verification of affected deliverables. Host compilation, a loaded main artifact, or same-named interfaces alone does not prove target-runtime compatibility or capability equivalence. Prove an existing capability gap before proposing a new library.
-- **Triggered checks.** Use the table only for behavior or obligations affected by the review, not because a related construct exists somewhere in the system. For each relevant clause, record its concrete trigger and result or missing evidence. Group clearly irrelevant exclusions by reason. Unknown applicability is Not checked, not Not applicable. A listed category is not evidence of a completed check.
+For every write that depends on an earlier read (a balance, stock count, status, quota, "does this already exist"), ask: if two requests read the old value at once, what is stored? The write is protected by one of:
 
-| Reachable risk | Required section in Risk Checks |
+- a single conditional statement (`UPDATE stock SET qty = qty - 1 WHERE id = ? AND qty >= 1`) whose affected row count is checked;
+- a version column compared in the `WHERE`, with zero rows handled as a conflict;
+- a row lock (`SELECT ... FOR UPDATE`) taken in the write's transaction and held until commit;
+- a unique constraint enforcing a check-then-insert;
+- a serializable transaction retried on serialization failure.
+
+Defect signs: read, compute in code, write the whole value back (lost update); check-then-insert with no unique constraint; version read but not used in the `WHERE`; affected row count ignored; lock taken in another transaction than the write; an in-process lock guarding data shared by several instances; a rule across rows or ranges (a total under a cap, no overlapping bookings, "no active record exists") protected only by one row's version or a snapshot read, so two transactions both pass the check and write; shared mutable memory (static fields, singletons, module-level maps) changed concurrently without synchronization.
+
+Usually correct: last-writer-wins where the contract allows it (a display name); an atomic database increment; a precheck for a clear message while a constraint enforces.
+
+### 2.3 Transactions and partial failure
+
+- Are the writes that must succeed or fail together in one transaction on one connection?
+- Is the transaction really active? Check self-invocation bypassing a transaction decorator, a second connection, autocommit, and work handed to another thread or task.
+- If it fails between two writes, what stays committed or visible? Does a catch inside the transaction let a partial write commit?
+- On a commit timeout or lost response, does the code treat "unknown" as "failed" and repeat a write that must happen once? Unknown needs a lookup or safe replay.
+- Does any path undo committed data by deleting it instead of the contracted compensation?
+
+Defect signs: two saves with no transaction; a slow external call inside the transaction while row locks are held (rate by impact); a validation after the first write, which a rejection leaves in place.
+
+Usually correct: a single-statement write; logs and metrics outside the atomic set; a follow-up the contract says a retrying job completes.
+
+### 2.4 External calls, events and commit order
+
+Place each external call or publish relative to the commit:
+
+- **Before or inside the commit.** On rollback, the email, payment or event exists for data that does not; a defect when anyone acts on it.
+- **After the commit, with no durable record.** A crash between commit and send loses the effect; a defect when the contract requires delivery.
+- **Remote succeeded, local failed.** Is there compensation or reconciliation?
+- **Response lost (timeout).** The remote side may have done the work; a blind retry repeats it unless the remote side honors an idempotency key.
+- **Acknowledged before the effect is durable.** A crash after the ack loses the message.
+
+Usually correct: an outbox row in the same transaction; an after-commit hook where the contract accepts occasional loss; read-only calls.
+
+### 2.5 Retry, redelivery and duplicates
+
+Ask: what happens when the client, a proxy, the scheduler or the queue sends the same request twice, possibly while the first still runs?
+
+- A naturally idempotent effect (set status to X, upsert by natural key) is fine.
+- Otherwise (charge, send, insert, increment), check the duplicate guard: an idempotency key enforced by a unique constraint in the effect's transaction, scoped to the operation and caller; a reused key with different content rejected; a replay returning the stored result; an in-progress record never reported as completed; retention covering the promised retry window.
+- Queue consumers: unless the broker contract says otherwise, delivery is at least once; is the handler idempotent or deduplicated by message ID?
+- Internal retry loops: only transient errors and operations safe to repeat, bounded attempts with backoff, a fresh transaction per attempt, no repeat of a call whose outcome is unknown?
+
+Usually correct: retried reads or idempotent PUTs; a unique-keyed deduplication row inserted with the effect. Do not recommend a deduplication mechanism where no contract requires the effect to happen once.
+
+### 2.6 Errors and cleanup
+
+Each catch or error return is correct when it uses a fallback the contract allows, compensates, translates to the contract's error keeping the cause, or rethrows with context.
+
+Defect signs: catch, log and return success, an empty list, a default or `null`; a dependency failure turned into "not found" or "no permissions", so the caller acts on a false fact; a broad catch that also hides programming errors; the wrong error class or status (500 for a validation error, 200 with an error body); a cleanup error replacing the original; a resource not closed on an early return; an ignored error return or an un-awaited async call.
+
+Usually correct: ignored best-effort telemetry failures; catching one expected error the contract describes (duplicate key → return the existing record).
+
+### 2.7 Money, numbers, time and text
+
+- **Money.** Binary floating point (`float`, `double`, a JavaScript `number` with fractions) for amounts stored, charged, compared or summed is a defect; use decimals or integer minor units. Check currency minor units (JPY 0 decimals, KWD 3), the rounding mode and where it applies (per line or on the total, per the contract), split parts adding up to the total (allocate the remainder), truncating integer division, and the order of conversion and rounding.
+- **Numbers.** Units (milliseconds versus seconds), percentages as 0.15 versus 15, division by zero, parse failures, overflow and values out of the column's range.
+- **Time.** Candidate: an instant stored in local time or with no offset; confirm it when the schema, a contract or another reader expects UTC. Apply date-only rules (due today, end of month) in the contract's time zone. Check daylight-saving changes, month ends, leap days, and inclusive versus exclusive end times.
+- **Text.** Normalize case and whitespace alike on write and lookup; check collation and whether length limits count bytes or characters.
+
+Usually correct: floats for non-money ratios and metrics; rounding only for display when stored values are exact.
+
+### 2.8 Boundaries, lists and batches
+
+- Test each comparison at its edge: `<` versus `<=`, an inclusive end date, a count at the limit, zero or one item, the last page.
+- Pagination: the sort order must be total (a unique tiebreaker such as the ID), and a cursor must encode every sort key and compare in the sort's direction. Offset paging under concurrent inserts can skip or repeat rows; a defect only when the contract promises a stable listing. "Has more" must be right when exactly `limit` rows remain: fetch `limit + 1`. Candidate: a page size the client can raise with no server cap.
+- Batches: handle an empty `IN ()` list and duplicate input IDs; report errors at the input's original positions when the contract asks. Candidate: a batch with no maximum size.
+
+Usually correct: offset paging on an internal list with no stability promise.
+
+### 2.9 Queries and load
+
+- **Per-item queries (N+1).** A query or remote call inside a loop over a result whose size grows with data or user input is a candidate. Confirm it only when the list size is user- or data-driven on a request path and a contract or sourced latency limit applies; otherwise it is a suggestion. Rate it by measured or sourced impact. Usually correct: a loop bounded by a small constant, a batched `IN` fetch, eager loading configured in the ORM, a per-request cache.
+- **Unbounded work and timeouts.** Candidates: a user-driven query with no limit; a whole table loaded into memory; a new filter on a large table with no index (cite the schema); an external call with no timeout; retries multiplying across layers (3 × 3 × 3 = 27).
+
+### 2.10 Compatibility, deploys and migrations
+
+When the project deploys by rolling update or can roll back, assume old and new versions run together and a rollback runs old code on data new code wrote.
+
+- **Migrations.** A NOT NULL column with no default on a table old code inserts into; renaming or dropping a column or table old code reads; a column type change; a new enum value old readers reject; a long-locking change on a large table; a backfill overwriting rows written after it started; a migration that fails on re-run. Safe pattern: add the nullable or defaulted shape, deploy code handling both, backfill, remove the old shape later.
+- **APIs and messages.** Removing or renaming a field; changing its meaning, unit or default; making an optional request field required; a decoder rejecting unknown fields, so an added field breaks old readers. The new version must process messages the old one queued, and old consumers still running must read new messages.
+- **Configuration and flags.** Check the default for a missing setting and both branches of a switch; turning a flag off must stop the effect, not just hide the entry point.
+- **Removal.** Before removing a field, method or endpoint, search every caller, including reflection, configuration, scheduled jobs and other services, and report unknown external consumers.
+- **Released behavior.** "Released behavior preserved" needs a comparison of inputs, outputs, defaults, failures, ordering and side effects with the released artifact or an approved equivalent, not a development branch; if unavailable, it is a pending gate with an owner.
+- **Documentation.** When behavior changes, check that the API schema, interface comments and error catalog describe the new nullability, units, failures and effects; a stale description callers rely on is a finding.
+
+Usually correct: an added nullable column or optional response field that clients ignore.
+
+### 2.11 Tests
+
+For each changed behavior and test, ask: if the change were reverted or the guard deleted, would a test fail?
+
+Defect signs: no assertion, or only not-null, no exception or status 200; an expected value computed by the code under test; asserting a mock's own return value; verifying a mock call but not the result or stored state; a catch swallowing failures; a disabled test; fixed sleeps or identical payloads standing in for a concurrency test; a test name promising what the assertions do not check; only the happy path for a change that adds a rejection.
+
+A missing test is a test-adequacy finding, not a production defect, unless a project rule requires it. A test that claims a behavior but cannot fail is a finding, rated by what it lets through. Say which tests you ran, on which revision, with what result; reading code is not running it.
+
+### 2.12 Deeper checks
+
+Open a [Risk Checks](references/risk-checks.md) section only when its trigger is in the inventory.
+
+| Trigger in the change | Section in Risk Checks |
 | --- | --- |
-| Changed numeric, text, time, length, encoding, or collection behavior | Value and Time Boundaries |
-| Affected mutable shared facts, ranges, duplicate suppression, or resource waiting dependencies | Concurrency and Deduplication |
-| Affected external writes, message/task handling, asynchronous work, or resource ownership | Asynchronous Work and Recovery |
-| Affected queries, expensive input, shared capacity, waits, retries, or deadline cleanup | Queries, Budgets, and Capacity |
-| Affected existing cache or authorized offline data investigation | Caches and Diagnostics |
-| Affected untrusted-data path to technical operations, or sensitive-data flow | Technical Security and Data Protection |
-| Actual migration, deployment, rollback, or configuration change | Migration, Release, and Configuration |
-| Affected failure logging, sourced detection duty, or silent failure of accepted durable work | Logs and Operational Detection |
+| Clocks across machines; value equality, collection identity, replacements | Values, Time and Collections |
+| Locks, connection pools, leases or waits on other work | Locks and Progress |
+| Queues, jobs, async commands, compensation, resource lifetimes | Asynchronous Work and Recovery |
+| Deadlines, expensive input, shared capacity, retry chains | Budgets and Capacity |
+| An existing cache, or an offline data investigation | Caches and Diagnostics |
+| Client values reaching queries, files, processes or deserialization; personal or secret data | Data Protection and Technical Operations |
+| Live migration of retained data, destructive conversion, rollback, dynamic configuration | Migration, Release and Configuration |
+| Protocol or format changes | Compatibility Evidence |
+| Failure logging, or a silent failure that could hide accepted work | Logs and Detection |
 | Direct or transitive dependency upgrades | Dependency Upgrades |
+| A test in the change claims to prove concurrency, dependency-failure or money behavior | Test Evidence |
 
-## Pass 6: Verify Evidence Strength
+## Step 3: Verify each candidate
 
-- **Independent expectations.** Check relevant positive, negative, and boundary cases against expectations independent of implementation. Verify authoritative errors, complete results, exact input paths, and required effects. Require that the target assertion rejects a relevant wrong behavior. Non-null results, no exception, tautologies, or expectations derived from the result do not prove business correctness. Shared allowed values must not silently relax expectations.
-- **Red then green.** For each proposed code fix, make a target assertion fail for the target behavior before the minimal complete fix, then pass afterward on the correct artifact. A missing entry proves only an interface gap. Unrelated compile failures, environment failures, skipped cases, and commit order do not prove a target red result. For protection of already-correct behavior, use an authorized isolated mutation when needed and restore original bytes. Never falsify expectations or alter correct delivered behavior to manufacture red evidence. An ordinary review of unchanged correct code needs no historical red result. A pending required fix-verification step prevents acceptance of that fix, not proof of a current business defect.
-- **Fault sensitivity.** When changed guards or calculations control authorization, persistent integrity, irreversible effects, or an obligation classified as critical by project policy, select a finite relevant fault model: boundary reversal, omitted guard, wrong classification, or missing effect. Check sensitivity with targeted counterexamples or authorized isolated mutations. Explain surviving, equivalent, unexecuted, and invalid mutations separately. Distinguish missing inputs from weak assertions. Do not count unrelated failure as a kill, infer total adequacy from one kill, impose a fixed rate, or mutate unauthorized resources.
-- **Controlled interleavings.** For reachable concurrency guarantees, use distinguishable writes and explicit states to test success, conflict, abort, confirmed and unknown commit, final contents, and record counts. For resource dependencies, also test contracted progress or recovery under controlled healthy schedules. Require bounded waits, timeout failure, and interruption handling. Identical payloads and fixed sleeps do not prove the intended interleaving. Verify storage-specific claims on supported actual storage and configuration. Use narrow state-predicate probes only when suitable events are unavailable.
-- **Real adapter failures.** Drive scripted dependency failures through the actual adapter to the use case and protocol entry. Enforce method-specific call budgets, forbidden calls, unexpected-call rejection, and unconsumed-response failure. Give budget guards a failing counterexample. Do not equate a fixed-success substitute with failure propagation or scripted execution with live external acceptance.
-- **Actual producer and consumer.** Generate responses through delivered producer logic and requests through actual consumer encoding. Replay with independent field, location, and save/read-back assertions as applicable. Trace sample origins and preserve the existing sample baseline if export fails. Real code does not require live production access: contract-derived seed data executed through actual code in an authorized isolated environment is valid when labeled honestly. Handwritten samples alone do not prove the chain. Samples supplement, not replace, business tests and need not introduce a new platform.
-- **Execution claims.** For every claimed result, retain command or procedure, revision, selected set, actual execution stage, outcome, and artifact freshness. Distinguish design, implementation, tests, deployment, and environment availability. Disclose skips and unknowns. Source inspection, substitutes, in-memory stores, configuration presence, or local success cannot establish stronger target-infrastructure or release claims.
+Try to disprove each candidate and re-checked comment as if another reviewer raised it.
 
-## Pass 7: Adjudicate and Recommend
+1. **Name the contract** you can cite, looking in this order: (1) the request, ticket, requirement or design document; (2) API schemas, interface docs, comments, and names that promise behavior (`reserveOnce`, `idempotencyKey`, `amountCents`); (3) the database schema: constraints, types, defaults, unique keys; (4) existing tests and the released behavior callers rely on; (5) project rules: coding standards, error-code catalogs, review policies. These baseline obligations also count when the code makes them reachable:
+   - a caller reaches only data their identity is allowed to;
+   - an accepted write is not lost, half applied, or overwritten by a stale value;
+   - a retried or redelivered request does not repeat money movement, messages or inserts that must happen once;
+   - other systems never see an effect for uncommitted data;
+   - a dependency or processing failure is never reported as success, an empty result or "not found";
+   - under rolling deploys or rollback, old and new versions both work with the data and messages the other writes;
+   - money is exact in the currency's units with the stated rounding;
+   - a paged or filtered list returns each promised item once, in the stated order;
+   - a test that claims to cover a behavior fails when that behavior breaks.
+2. **Write the trigger**: a concrete input, state or timing, through a real entry point, reaching the line. "Could be null" is not a trigger; "`POST /refunds` accepts `amount: \"19.99\"`, line 88 parses it as a double and truncates `amount * 100` to an integer, so 1998 cents are refunded instead of 1999" is.
+3. **Search for the defense**: middleware, decorators, the caller, the schema, the transaction wrapper, framework defaults, tests. If a defense stops the trigger, drop the candidate.
+4. **Trace the consequence**: what goes wrong, for whom, and is it recoverable?
+5. **Classify.** Confirmed: the trigger is reachable and violates a located contract. Uncertain: the trigger is reachable and a contract source plausibly governs it but is silent or ambiguous, or one decisive fact is unknown; name the source and the question. Not substantiated: a defense stops it, the path is unreachable, or you checked the five sources and the baseline list and none covers the input; if still worth doing, it may be a suggestion. Impact, experience, a missing test or a hypothetical caller alone confirms nothing.
 
-- **Defect threshold.** For every candidate, locate a specific effective authoritative use case, contract, or applicable security or integrity obligation. Record its location, covered input and stage, expected result, and observed result. Confirm a defect only when a reachable implementation path violates that expectation. Reachability, impact, experience, a proposed test, or a hypothetical consumer alone is insufficient.
-- **Disposition and independence.** Verify every earlier comment and new candidate against decisive source facts, relevant tests, and applicable authority, independently of the proposing narrative. Classify each as Confirmed, Uncertain, or Not substantiated from that evidence. Record proposer, verifier, and whether the verifier is distinct. Require a verifier distinct from the proposer for every candidate; same-person rechecking does not complete independent verification. Still give the evidence-based merge recommendation, stated as conditional on that verification; if a distinct verifier is unavailable or unauthorized, record the required verifier role as a pending gate. Missing mandatory independence is a pending workflow gate, not a reason to downgrade a demonstrated defect. Report all three counts, including zeros, without fixed staffing or rounds.
-- **Calibrated findings.** For each finding, record source locations, reachable trigger, affected subjects and scope, consequence, violated authority, severity, recoverability, existing defenses, decisive evidence, and the narrowest repair that preserves the established architecture. Separate current defects, conditional risks, maintenance suggestions, and verification gaps. Derive severity from observable impact and the applicable project scheme, not preferences or absence of tests. Keep the merge recommendation within the verified scope.
-- **Necessary simplicity and clarity.** For mechanisms added or removed, state the current trigger, omission consequence, existing defenses, simpler equivalent, and long-term cost. Preserve complete behavior and robustness before simplifying. Do not remove valid validation, failure classification, concurrency guards, or negative tests as duplication. For affected security, numeric, or state decisions, explain branches, precedence, short circuits, and effects from local code and contract. Check that names describe actual conditions and effects. Separate comprehension or behavioral defects from style; do not impose arbitrary line, nesting, or abstraction thresholds.
-- **Contract documentation.** Verify that consumers can understand nullability, units, result meaning, failures, effects, and non-obvious constraints without reading the implementation. Synchronize affected explanations with behavior. Do not require ritual tags, authorship, line-by-line narration, production-source process arguments, or empty helper methods to avoid comments.
-- **Reusable guidance.** When extracting reusable guidance from a review, remove system, business, technology, company, and machine bindings while preserving the premise, action, testable criterion, and exceptions. Keep it self-contained without copying another specialist workflow. Do not silently weaken or strengthen the originating rule.
-- **Owner decisions and exceptions.** Separate established violations from unresolved business, permission, or external-responsibility choices. For every Uncertain candidate, including missing-evidence and verification-gap candidates, and every unresolved choice, provide evidence, missing authority, the exact question, owner, and code-change, documentation-only, and no-change options with consequences. Gathering missing evidence is a next step, not a substitute for the documentation-only option. Record the decision and rationale, or keep the unresolved contract question uncertain and its decision pending. A pending remedy choice does not undo a confirmed violation. Documentation-only or no-change dispositions cannot waive an unmet mandatory requirement. Review permission is not repair permission. For exceptions, verify approval, scope, conditions, defenses, review/expiry trigger, and transition direction. Registration is not approval; one exception does not waive a category.
+If a project rule requires a verifier other than the proposer, record that check as a pending gate; it does not downgrade a demonstrated defect.
 
-## Deliverable
+## Step 4: Rate severity
 
-Scale the report with the recorded risk. For one bounded concern without specialist triggers, combine items 1, 3, 4, and 8 into a compact report. For one risk-bearing concern, expand that report with the applicable evidence and acceptance items. Use all eight sections in order for multiple concerns or an explicit user/project requirement. Items 2, 5, 6, and 7 may be omitted when no separate lanes, owner decisions, code fixes/release obligations, or compatibility duties apply, respectively. Omit lane totals and absent performance measurements from a compact outcome. State omissions as "Not applicable: <reason>"; group omissions sharing a reason instead of creating empty sections. Keep applicable scope, evidence, candidate counts, gaps, required gates, and recommendation. Use None for an examined empty result and Not checked with a reason for an unexamined duty. Every pending requirement must name evidence, owner, and a mandatory gate; Pending alone is insufficient.
+Rate by impact and reachability, not style or missing tests; a project's own scheme overrides this one.
 
-1. **Scope and baseline.** State risk level and its triggers, revision, requirement/comparison baselines, allowed and excluded scope, frozen behavior, and exceptions. Include inspected paths, scope-verification method, start/end workspace changes and statistics, pre-existing versus review changes, and authorization boundaries for credentials, environment files, database writes, and shared services.
-2. **Review arrangement and coverage.** For applicable lanes, record scope, entries, contracts, executor, method, evidence, findings, and gaps. Distinguish actual independent verification from same-person work and pending mandatory review. Map promised requirements to implementation, evidence, and conclusion. For one concern, incorporate that mapping directly into its evidence rather than manufacture a lane table.
-3. **Findings.** Present confirmed findings by severity and state independent-verification status separately. Include reachable input/stage, path and locations, expected versus actual behavior, consequence and scope, violated authority and location, severity rationale, defenses, recoverability, evidence, and narrow repair. Separate conditional risks, suggestions, and verification gaps.
-4. **Candidate dispositions.** Give every earlier or new candidate its proposer, verifier or unavailable status, decisive evidence, disposition, and reason. Print the total and Confirmed, Uncertain, and Not substantiated counts, including zeros; require their sum to match. Keep uncertain and rejected candidates outside the confirmed list. With no candidates, the zero counts suffice. Track mandatory independent-review gates separately from factual confidence.
-5. **Owner decisions.** For every Uncertain candidate and unresolved choice, include the question, evidence, missing basis, owner, and code-change, documentation-only, and no-change options with consequences. Give each actual decision and rationale or a pending required decision gate. Do not turn a proposed contract change into a current defect.
-6. **Required remediation and verification.** For each proposed or future code fix arising from the review, list acceptance steps in order: a recorded target failure on the unfixed revision, the minimal complete fix within the established architecture, the same target passing on the fixed revision, review and approval of the fix by someone other than its author, and passing project quick gates. Name the reviewer role, quick-gate commands or procedures, environment, and expected outcome. Require applicable complete release gates before release. Where a fix will be released or operational acceptance is in scope, specify affected post-release behavior/signals, owner, timing/trigger, expected result, and stop/recovery condition. Give commands, revisions, scope, results, and skips or mark each unexecuted requirement mandatory before its merge, release, or post-release gate. These recommendations grant no repair authority.
-7. **Compatibility evidence.** Include applicable request/response old/new sender/receiver pairs, actual codec versions, sample provenance, an explicit assertion that old decoders skip each added member (or field-level evidence that no member was added), and preserved semantics. Include retained data, replay, queued work, and rollback combinations when reachable. Separately list a mandatory production-baseline comparison for each affected released behavior or contract: immutable released artifact or approved equivalent and its basis, sample provenance, expected preserved behavior, actual result, evidence location, owner, and named acceptance gate. Neither successful decoding nor a development comparison satisfies this item. Mark every required comparison passed, failed, or pending; pending comparisons must pass before the named merge gate, or an explicitly permitted release gate. Do not hide either matrix entries or production comparison in a generic unverified note.
-8. **Quantified outcome and merge recommendation.** Report applicable requirement coverage, candidate counts, checks executed/passed/failed/skipped/pending, gaps, and initial/final change statistics. For the full report, add lane completion and relevant measured values against sourced limits. Name each ratio's enumerable denominator. Recommend acceptance only within verified scope: mergeable, conditional on named gates, or not mergeable. Do not recommend unconditional acceptance with unmet mandatory requirements or missing decisive evidence for a promised conclusion. A clean review does not prove fixes, release, or post-release acceptance.
+- **Blocker:** reachable in normal use or routine conditions (a retry, two concurrent users, a deploy), causing unauthorized access, data loss or corruption, wrong money, a duplicate irreversible effect, or an outage or failed deploy.
+- **Major:** a wrong result or failure with limited scope or easy recovery; a Blocker-class impact that needs uncommon but realistic conditions; a hot path that breaks a contracted or sourced latency limit.
+- **Minor:** small impact, rare conditions, simple recovery.
+
+## Step 5: Propose the fix
+
+- Give the narrowest fix that removes the trigger; do not remove valid validation, error classification, concurrency guards or negative tests as duplication.
+- Acceptance, in order: a test that fails on the current revision at the target assertion (not on compilation, environment or skipped tests, and never by changing expectations); the minimal complete fix; the same test passing; review by someone other than the fix's author; the project's quick checks, and release checks before release.
+- For an Uncertain candidate or open business choice, give the question, evidence, owner, and the consequences of changing the code, documenting the current behavior, or leaving it; neither of the last two waives a mandatory requirement. An approved exception names its approver, scope and expiry.
+
+## Step 6: Report
+
+Use the compact report for one bounded change; omit empty sections. Verdict: Not mergeable for a confirmed Blocker, or decisive evidence missing for a promised behavior; Mergeable after fixes for confirmed Major or Minor findings, or pending gates with owners; otherwise Mergeable.
+
+```
+Verdict: Mergeable | Mergeable after fixes: F1, F2 | Not mergeable: F1
+Scope: <revision or diff>; entry points reviewed; not covered: <what and why>
+
+Findings
+F1 [Blocker] <one-line title>
+  Location: <file:line, plus related lines>
+  Trigger: <concrete input, state or timing, through which entry point>
+  Contract: <what must hold, and where it is stated>
+  Consequence: <what goes wrong, for whom, recoverable or not>
+  Evidence: <decisive code facts; tests or commands run and their results>
+  Fix: <narrowest change within the current design>
+  Verify: <test that fails now and passes after the fix>
+
+Uncertain
+U1 <question> — owner: <who decides>; missing: <fact or contract>; options: change code / document / leave as is, with consequences
+
+Test gaps and suggestions (not defects)
+- <item>
+
+Checked, no finding: <Step 2 areas that applied and were clean>
+Not applicable / Not checked: <areas — reason>
+Candidates: <n> checked — <c> confirmed, <u> uncertain, <d> not substantiated
+Checks run: <commands and results, or "none; review by reading">
+Workspace: <changes before and after the review, or "unchanged">
+Pending gates: <required checks or approvals not yet done, each with an owner>
+```
+
+Order findings by severity, with Uncertain items and suggestions kept out. Count a not-substantiated candidate rather than keeping it as a suggestion; list at most three suggestions.
+
+For several independent concerns or a requested full report, add a requirement → evidence map (missing, inapplicable and unverified items marked), one block per concern, each candidate's disposition, owner decisions, remediation and release steps (for a released fix: the signal to watch, its owner, the stop condition) and, when 2.10 applied, compatibility evidence.
+
+Recommend acceptance only within what you verified; a clean review proves nothing about production.
 
 ## Self-check
 
-- [ ] Verify the risk-scaled report retains applicable scope, evidence, dispositions, gaps, mandatory gates, and a scoped recommendation; explain omitted duties without empty ceremony.
-- [ ] Reconcile the baseline, inspection set, impact closure, strict scope, change statistics, authorization limits, and each promised requirement against evidence.
-- [ ] Verify rejected paths preserve authoritative failure order, original positions, current authorization, exact call budgets, and forbidden-effect guarantees.
-- [ ] Check only triggered specialist risks at the claimed evidence strength, including commit knowledge, bounded recovery after expiry, contracted duplicate/order guarantees, concurrent progress, and reachable compatibility directions.
-- [ ] Reconcile every candidate and all three counts. Keep missing authority uncertain, mandatory independence pending separately, owner choices open, and exceptions within approval.
-- [ ] Verify fixes preserve the established architecture and carry target red/green, required project review and merge/release gates, and applicable post-release regression; make production-baseline comparison a separate mandatory gate when triggered.
+- [ ] Every finding passed Step 3: a reachable trigger, a located contract (a contract or sourced limit for edge cases, hardening and performance), a searched defense, a consequence and the narrowest fix.
+- [ ] Every changed block maps to a requirement; skipped Step 2 sections are listed; Uncertain items name the source, question and owner and stay out of the findings.
+- [ ] Fixes stay inside the established architecture, with any architecture change a separate owner decision; no code, data, services or credentials touched; workspace recorded; unrun checks pending.
+- [ ] One bounded change gets the compact report, ordered by severity.

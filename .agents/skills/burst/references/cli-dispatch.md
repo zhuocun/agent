@@ -51,15 +51,15 @@ assignment into a different shell unchanged.
   Examples do not imply authorization for new login, proxy or persistent settings
   setup, and do not require such changes.
 - **Model and effort**: pass them on every dispatch, using the newest required
-  family in the source's current model list. Never rely on defaults or a router
-  such as Cursor Auto or Devin `adaptive`/`fusion`. Use an alias only when its
-  verified mapping selects the required version and tier; a bare family or
-  partial name such as `gpt` does not guarantee tier, effort or speed. Spell
-  effort exactly and check the selected model's support. When the assigned
-  level is missing, use the highest supported level below it, as
-  **Effort limits** in `SKILL.md` requires. If an ID is rejected, select the
-  next-newest listed ID of the same family and tier; never let the CLI choose
-  its default.
+  family in the source's current model list. Never rely on defaults, a router
+  such as Cursor Auto or Devin `adaptive`, or a Devin `fusion` lead/sidekick
+  pairing. Use an alias only when its verified mapping selects the required
+  version and tier; a bare family or partial name such as `gpt` does not
+  guarantee tier, effort or speed. Spell effort exactly and check the selected
+  model's support. When the assigned level is missing, use the highest supported
+  level below it, as **Effort limits** in `SKILL.md` requires. If an ID is
+  rejected, select the next-newest listed ID of the same family and tier; never
+  let the CLI choose its default.
 - **Fast**: enable it only inside the user's named scope. Explicitly select
   standard elsewhere, including for an assigned model that has no Fast option on
   the selected source. Saved settings and defaults can affect headless runs.
@@ -372,19 +372,19 @@ a new account or build.
 - **Model and effort**: fetch `devin models list --format json` with the planned
   account and copy the full UID for the newest required model and assigned
   effort. `--model` also accepts loose aliases, family slugs and partial names;
-  do not use them. A latest-family alias can lag the catalog's newest version
-  and leaves effort/speed ambiguous. Effort is encoded in the UID; no dedicated
+  do not use them. A family alias resolves to that family's latest version but
+  leaves effort/speed ambiguous. Effort is encoded in the UID; no dedicated
   effort flag, environment variable or config key is exposed. Select a listed
   supported effort, never synthesize `<model>-<level>` from naming patterns.
   Interactive `Alt+T`, `/model` and `/fusion` controls do not set headless effort.
-  Never use `adaptive` or `fusion` routers.
+  Never use the `adaptive` router or a `fusion` lead/sidekick pairing.
 - **Defaults and resume**: pass the exact UID on new runs and resumes.
-  `DEVIN_MODEL` or effective user/organization `agent.model` can select a
-  default; the documented built-in default is a fast Cognition SWE model. A
-  resume without `--model` keeps its saved model. Do not depend on unverified
-  family-preference reuse. `/fast` switches to a fast Cognition model instead
-  of selecting the current assigned model's Fast variant. `-c` is `--continue`,
-  not a Codex-style configuration override.
+  `DEVIN_MODEL`, user `agent.model` (which interactive `/model` saves) or a team
+  default model can select a default; the documented built-in default is a fast
+  Cognition SWE model. A resume without `--model` keeps its saved model. Do not
+  depend on unverified family-preference reuse. `/fast` switches to a fast
+  Cognition model instead of selecting the current assigned model's Fast
+  variant. `-c` is `--continue`, not a Codex-style configuration override.
 - **Auth**: check the supported `devin auth status` with the child's effective
   configuration and existing credentials. No API-key environment route is
   documented for `-p`;

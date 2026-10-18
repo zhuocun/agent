@@ -1,9 +1,9 @@
 ---
-name: visual-ux-sweep
+name: ui-sweep
 description: Review (and, when asked, fix) UI/UX regressions in a web app via headless-browser screenshots across routes, viewports, themes, and interaction states. Use when asked to audit the UI, review the design, find visual or accessibility regressions, screenshot the app, verify visual changes look right, or "make the UI look right." Framework-agnostic (React/Vue/Svelte/plain). Builds and serves the app, renders it headlessly, and pairs each screenshot with a root-cause probe and, when fixes are wanted, a surgical fix. Needs an app that builds and runs locally; not for product/feature work or new pages.
 ---
 
-# Visual UX Sweep
+# UI Sweep
 
 Find UI/UX issues by screenshot review and, when fixes are wanted, fix
 them in tight commits. The screenshot matrix is the discovery loop —

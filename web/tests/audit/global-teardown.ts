@@ -1,7 +1,7 @@
 // Audit global teardown: aggregate per-capture JSON into probes.json and a
 // human-readable probes.md, and fail the run when two DISTINCT surfaces
 // (different surface, viewport or theme) produced byte-identical PNGs — the
-// signature of a surface that never rendered (visual-ux-sweep skill, "Verify
+// signature of a surface that never rendered (ui-sweep skill, "Verify
 // the capture"). Same-surface duplicates across media variants are expected
 // (reduced-motion of a static frame is pixel-identical) and only noted.
 

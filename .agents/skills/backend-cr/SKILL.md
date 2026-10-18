@@ -26,10 +26,10 @@ Priority order: **authorization, data integrity and business correctness > failu
 
 ## Step 1: Map the change
 
-1. Identify the revision and requirements; re-check earlier review comments.
+1. Identify the revision and requirements, including any QA story set given (user stories with acceptance criteria); without one, do not invent stories. Re-check earlier review comments: on a later round of the same change, review the changes since the last reviewed revision and verify each earlier finding's fix instead of re-reviewing everything.
 2. Read the whole diff and its callers/callees through existing guards: middleware, decorators, interceptors, policies, repository filters, transaction wrappers, database constraints and caller validation.
 3. Name each changed block's requirement. Unrequested changes in outputs, error codes or order, defaults or side effects are candidates against released behavior callers rely on.
-4. Note one line per changed entry point (endpoint, handler, job, consumer, command, migration): caller and identity source; reads and decisions; writes and transactions; external calls and publishes (payment, email, HTTP, queue, cache, other service) before, inside or after commit; error handlers; schema, configuration or message-format changes; covering tests.
+4. Note one line per changed entry point (endpoint, handler, job, consumer, command, migration): caller and identity source; reads and decisions; writes and transactions; external calls and publishes (payment, email, HTTP, queue, cache, other service) before, inside or after commit; error handlers; schema, configuration or message-format changes; covering tests; the in-scope stories it serves.
 5. Record unavailable code, configuration and services as coverage gaps. Do not inspect or judge outside a strict user or project boundary.
 
 ## Step 2: Hunt
@@ -176,7 +176,7 @@ Open a [Risk Checks](references/risk-checks.md) section only when its trigger is
 
 Try to disprove each candidate and re-checked comment.
 
-1. **Name the contract** you can cite, looking in this order: (1) the request, ticket, requirement or design document; (2) API schemas, interface docs, comments, and names that promise behavior (`reserveOnce`, `idempotencyKey`, `amountCents`); (3) the database schema: constraints, types, defaults, unique keys; (4) existing tests and the released behavior callers rely on; (5) project rules: coding standards, error-code catalogs, review policies. These baseline obligations also count when the code makes them reachable:
+1. **Name the contract** you can cite, looking in this order: (1) the request, ticket, given user stories and their acceptance criteria, requirement or design document; (2) API schemas, interface docs, comments, and names that promise behavior (`reserveOnce`, `idempotencyKey`, `amountCents`); (3) the database schema: constraints, types, defaults, unique keys; (4) existing tests and the released behavior callers rely on; (5) project rules: coding standards, error-code catalogs, review policies. These baseline obligations also count when the code makes them reachable:
    - a caller reaches only data their identity is allowed to;
    - an accepted write is not lost, half applied, or overwritten by a stale value;
    - a retried or redelivered request does not repeat money movement, messages or inserts that must happen once;
@@ -189,7 +189,7 @@ Try to disprove each candidate and re-checked comment.
 2. **Write the trigger**: concrete input, state or timing through a real entry point to the line. "Could be null" is insufficient; trace the failure with exact values and arithmetic where relevant.
 3. **Search for the defense**: middleware, decorators, callers, schema, transaction wrappers, framework defaults, tests. Drop a candidate the defense stops. If runtime, query, transaction or adapter semantics remain decisive and uncertain, use the smallest authorized isolated check; inspect the response and relevant durable state without changing reviewed deliverables or shared data. If unavailable, name the unresolved fact; static tracing and exact arithmetic can suffice.
 4. **Trace the consequence**: what goes wrong, for whom, and is it recoverable?
-5. **Classify.** Confirmed: the trigger is reachable and violates a located contract. Uncertain: the trigger is reachable and a contract source plausibly governs it but is silent or ambiguous, or one decisive fact is unknown; name the source and the question. Not substantiated: a defense stops it, the path is unreachable, or you checked the five sources and the baseline list and none covers the input; if still worth doing, it may be a suggestion. Impact, experience, a missing test or a hypothetical caller alone confirms nothing.
+5. **Classify.** Confirmed: the trigger is reachable and violates a located contract. Uncertain: the trigger is reachable and a contract source plausibly governs it but is silent or ambiguous, or one decisive fact is unknown; name the source and the question. Not substantiated: a defense stops it, the path is unreachable, or you checked the five sources and the baseline list and none covers the input; if still worth doing, it may be a suggestion. Impact, experience, a missing test, a hypothetical caller or a story silent on the case alone confirms nothing; the absence of a story for a behavior is never itself a defect. On a diff review, a defect the diff did not introduce or worsen goes on the Pre-existing line once it passes these steps, not in the findings or the verdict.
 
 If a project rule requires a verifier other than the proposer, record that check as a pending gate; it does not downgrade a demonstrated defect.
 
@@ -213,7 +213,7 @@ Use the compact report for one bounded change; omit empty sections. Verdict: Not
 
 ```
 Verdict: Mergeable | Mergeable after fixes: F1, F2 | Not mergeable: F1
-Scope: <revision or diff>; entry points reviewed; not covered: <what and why>
+Scope: <revision or diff; on a later round, since which revision, earlier fixes verified>; entry points reviewed; not covered: <what and why>
 
 Findings
 F1 [Blocker] <one-line title>
@@ -231,6 +231,9 @@ U1 <question> — owner: <who decides>; missing: <fact or contract>; options: ch
 Test gaps and suggestions (not defects)
 - <item>
 
+Stories: <S1 met; S2 violated: F1; S3 uncertain: U1; S4 not covered by a test; S5 outside scope> | no story set given
+Pre-existing (not this change's findings): <file:line — defect>
+
 Checked, no finding: <Step 2 areas that applied and were clean>
 Not applicable / Not checked: <areas — reason>
 Candidates: <n> checked — <c> confirmed, <u> uncertain, <d> not substantiated
@@ -239,7 +242,7 @@ Workspace: <changes before and after the review, or "unchanged">
 Pending gates: <required checks or approvals not yet done, each with an owner>
 ```
 
-Order findings by severity, with Uncertain items and suggestions kept out. Count a not-substantiated candidate rather than keeping it as a suggestion; list at most three suggestions.
+Order findings by severity, with Uncertain items and suggestions kept out. Combine repeated instances of one cause into one finding, locating every instance; keep distinct defects separate. Do not repeat an earlier round's fixed finding; carry one that is unfixed, whose fix failed, or that the new change worsened, under its original ID, and count it in the verdict. Give each story in a given set one status: violated (a finding), uncertain (a U item), not covered by a test (no violation found but no test that would fail; a test gap), met (satisfied and tested), or outside the reviewed scope; keep the Stories line when no set was given. Count a not-substantiated candidate rather than keeping it as a suggestion; list at most three suggestions.
 
 For several independent concerns or a requested full report, add a requirement → evidence map (missing, inapplicable and unverified items marked), one block per concern, each candidate's disposition, owner decisions, remediation and release steps (for a released fix: the signal to watch, its owner, the stop condition) and, when 2.10 applied, compatibility evidence.
 
@@ -248,6 +251,6 @@ Recommend acceptance only within what you verified; a clean review proves nothin
 ## Self-check
 
 - [ ] Every finding passed Step 3: a reachable trigger, a located contract (a contract or sourced limit for edge cases, hardening and performance), a searched defense, a consequence and the narrowest fix.
-- [ ] Every changed block maps to a requirement; skipped Step 2 sections are listed; Uncertain items name the source, question and owner and stay out of the findings.
+- [ ] Every changed block maps to a requirement, and each given story to its entry point, test and status (or the report says no story set was given); skipped Step 2 sections are listed; Uncertain items name the source, question and owner and stay out of the findings.
 - [ ] Fixes stay inside the established architecture, with any architecture change a separate owner decision; no code, data, services or credentials touched; workspace recorded; unrun checks pending.
-- [ ] One bounded change gets the compact report, ordered by severity.
+- [ ] One bounded change gets the compact report, ordered by severity: each cause once with every instance, no repeated fixed finding, pre-existing defects on their own line, out of the findings and verdict; a later round reviews only the newer changes and earlier fixes.

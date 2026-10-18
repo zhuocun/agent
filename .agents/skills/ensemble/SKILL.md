@@ -18,7 +18,7 @@ Priority order: **existing instruction hierarchy and user overrides → faithful
 
 - communicate
 - raise-ambition
-- burst
+- conductor
 
 ## Procedure
 

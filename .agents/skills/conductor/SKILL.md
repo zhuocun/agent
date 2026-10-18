@@ -1,9 +1,9 @@
 ---
-name: burst
+name: conductor
 description: Orchestrate parallel subagents as the primary performers of research, audit, implementation, and review work, while you keep the planning, integration and done decisions. Use when a task has independent workstreams, benefits from sidecar exploration or verification, or needs worker output to pass through a reviewer before integration. Do not use when no subagent launcher is available or the user or host prohibits delegation, or for a genuinely tiny single-step task that is faster to do locally.
 ---
 
-# Burst
+# Conductor
 
 ## Role
 
@@ -64,7 +64,7 @@ When the source the family's order selects is the one you are running in, prefer
 
 On Claude Code, when a bare `Agent` call exposes model but no effort parameter, use an available `Workflow` tool (`agent(prompt, {model, effort})`) or an effort-setting custom subagent dispatched through `Agent`'s `subagent_type`. Check that the host exposes the selected tool and fields before using them, and that no `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` or, for `Workflow`, `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` in the session's environment makes it ignore the per-agent model.
 
-**This skill requires explicit opt-in for `Workflow`, separately from the host's availability and permission checks. Opt-in starts when the user invokes or names this skill (for example `/burst`), asks for subagents or a workflow, or enables Claude Code's ultracode mode. It stays in force for later tasks in the session. Loading this skill yourself does not establish opt-in when the user has never invoked or named it. In that case, use a custom subagent, or `claude -p` when that route is unavailable or cannot carry the assignment.** A single-agent workflow is a valid dispatch under this opt-in.
+**This skill requires explicit opt-in for `Workflow`, separately from the host's availability and permission checks. Opt-in starts when the user invokes or names this skill (for example `/conductor`), asks for subagents or a workflow, or enables Claude Code's ultracode mode. It stays in force for later tasks in the session. Loading this skill yourself does not establish opt-in when the user has never invoked or named it. In that case, use a custom subagent, or `claude -p` when that route is unavailable or cannot carry the assignment.** A single-agent workflow is a valid dispatch under this opt-in.
 
 Write each generated Claude custom definition under the active user configuration directory's `agents/<name>.md`, one file per model and effort pair. `CLAUDE_CONFIG_DIR` can relocate that directory; `~/.claude/agents/<name>.md` is the conventional default, not a fixed destination. Verify that the directory is writable and loaded by the session. Existing project `.claude/agents/` definitions may be selected, but write a project definition only when that repository change is already authorized. Otherwise use another available route. Verify scope and name precedence so the intended definition wins. Include required `name` and `description` plus `model` and `effort` in the frontmatter. Pass the brief as the `Agent` prompt. For a leaf, deny the available native delegation tools through the supported tool restrictions (`disallowedTools: Agent, Workflow` on hosts with those tools); also prohibit delegation through CLIs and other routes in the brief.
 
@@ -224,7 +224,7 @@ Take the same order every time. The task, in one or two bullets naming what the 
 
 ## Self-check
 
-Before declaring a burst task done, confirm:
+Before declaring a conductor task done, confirm:
 
 - [ ] Delegation honored — every non-trivial workstream went to a subagent; nothing was pulled local except genuinely tiny or blocking-dependency steps, the orchestrator's own final gate, and work pulled local after two failed reviews or an integration redo (see **Reviewer** and **Orchestrator final gate**).
 - [ ] Concurrency maximized — independent strands ran in parallel, not serialized.

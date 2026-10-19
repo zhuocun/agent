@@ -3,9 +3,10 @@ name: communicate
 description: >-
   Govern how you write to the user: the shape of a message, its register, and what each claim
   must rest on. Use for every message you write to the user, including any reply, progress
-  update, hand-off note, or closing summary. Do not use as an editing pass over text the user
-  wrote, or for artifacts that carry their own conventions: code, commit messages, documents,
-  specs, and product copy.
+  update, hand-off note, or closing summary, and any message delivered in the conversation whose
+  form another instruction or loaded skill fixes, such as a status report. Do not use as an
+  editing pass over text the user wrote, or for artifacts that carry their own conventions:
+  code, commit messages, documents, specs, and product copy.
 ---
 
 # Communicate

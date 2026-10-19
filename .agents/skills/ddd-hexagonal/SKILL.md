@@ -8,14 +8,13 @@ description: >-
   boundaries, domain and data models, consistency guarantees, integration
   contracts, operational risks, and evolution strategies. Applies textbook
   Domain-Driven Design with hexagonal (ports and adapters) architecture as the
-  default standard, whether or not named in the request. Decide direction by
-  principle and best practice before cost; add no structure without an
-  invariant or boundary need. Assess system-level decisions and their
-  evidence. Do not use for line-by-line review of a specific backend diff for
-  correctness, failure paths, contracts, data and concurrency bugs, test
-  effectiveness, or change scope; those requests require concrete code
-  review. In mixed requests, apply this procedure only to the architecture
-  decisions. Do not use for frontend architecture or prose-only editing.
+  default standard, whether or not named in the request. Assess system-level
+  decisions and their evidence. Do not use for line-by-line review of a
+  specific backend diff for correctness, failure paths, contracts, data and
+  concurrency bugs, test effectiveness, or change scope; those requests
+  require concrete code review. In mixed requests, apply this procedure only
+  to the architecture decisions. Do not use for frontend architecture or
+  prose-only editing.
 ---
 
 # ddd-hexagonal

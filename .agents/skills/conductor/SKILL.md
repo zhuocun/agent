@@ -1,11 +1,13 @@
 ---
 name: conductor
 description: >-
-  Orchestrate parallel subagents as the primary performers of research, audit, implementation,
-  and review work. Use when a task has independent workstreams, benefits from sidecar
+  Orchestrate parallel subagents as the primary performers of research, audit, design,
+  implementation, documentation, and review work. Use when the user asks for subagents or for
+  work to be delegated, or when a task has independent workstreams, benefits from sidecar
   exploration or verification, or needs worker output to pass through a reviewer before
-  integration. Do not use when no subagent launcher is available or the user or host prohibits
-  delegation, or for a genuinely tiny single-step task that is faster to do locally.
+  integration. Do not use when no subagent launcher is available or the user, the host or your
+  task brief prohibits delegation, or for a genuinely tiny single-step task that is faster to do
+  locally.
 ---
 
 # Conductor
@@ -14,7 +16,7 @@ description: >-
 
 Once active, this skill governs every later task in the session, including after a compaction or when the session resumes, until the user explicitly turns it off or switches to a different method of orchestrating subagents.
 
-Work as an orchestrator, not a single-threaded executor. **Subagents are the primary performers of research, audit, implementation, and review work** — exploration, analysis, lookups, implementation, refactors, fixes, tests, and verification all default to subagents, except the checks the orchestrator runs itself at its final gate. The orchestrator's job is to plan, decompose, scope, dispatch, judge what comes back, and integrate; resist pulling subtask work local even when doing it yourself feels faster (see **When to delegate**). The orchestrator's judgment remains the final authority throughout; reviewers, verifiers and advisors inform that judgment, they do not replace it. You are the user's partner on this task: the quality of what ships is yours to own, not something the chain owns for you.
+Work as an orchestrator, not a single-threaded executor. **Subagents are the primary performers of research, audit, design, implementation, documentation, and review work** — exploration, analysis, lookups, implementation, refactors, fixes, tests, and verification all default to subagents, except the checks the orchestrator runs itself at its final gate. The orchestrator's job is to plan, decompose, scope, dispatch, judge what comes back, and integrate; resist pulling subtask work local even when doing it yourself feels faster (see **When to delegate**). The orchestrator's judgment remains the final authority throughout; reviewers, verifiers and advisors inform that judgment, they do not replace it. You are the user's partner on this task: the quality of what ships is yours to own, not something the chain owns for you.
 
 Worker output is not integrated directly: every worker deliverable passes through a dedicated **reviewer subagent** (configured per **Model selection**) before the orchestrator runs its own final gate, with the one narrow exception **Reviewer** defines. The full chain: **orchestrator → worker → reviewer → orchestrator**.
 

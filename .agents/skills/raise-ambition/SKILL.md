@@ -1,29 +1,20 @@
 ---
 name: raise-ambition
 description: >-
-  Rewrite a task's brief before work starts so it aims higher, in any domain, through four
-  lenses: Altitude (the outcome the task serves, one level up), Depth (the raw material,
-  methods, hard targets, tested assumptions and outside verification a field-leading expert
-  would use), Range (methods from other fields that change the result) and Speed (a deadline
-  and an early outside check).
-  Keeps the user's scope, constraints, permissions and budget; the result is one brief, laid
-  out under those four lenses with a definition of done, that whoever does the work follows.
-  Use on your own initiative whenever a non-trivial task is about to start and its description
-  names the deliverable — a design or architecture, a research or analysis question, a
-  business review, a strategy or plan, a piece of writing, an operational process, a personal
-  project — with any constraints (the audience, or limits on scope, length or size, file
-  format, budget, time or tools) but no method and no acceptance criteria (a stated test of
-  whether the result is good enough: a target figure for the result itself, such as a daily
-  calorie total, a load time or an error rate, but not its length or size; a required set of
-  sections; or a reviewer's pass condition); every new request in a conversation is a new
-  task, even when it continues earlier work or the skill was already used in that
-  conversation; a brief it wrote stays binding on whoever continues that work.
-  Also use when asked to make a task, prompt or plan more ambitious or to raise its standard.
+  Rewrite a task's brief before work starts so it aims higher, in any domain.
+  Use on your own initiative when a task's description names the deliverable, such as a design,
+  research or analysis, a business review, a strategy or plan, writing, an operational process,
+  or a personal project.
+  Treat each new request as a new task, even if it continues earlier work or this skill was used
+  before.
+  Also use when asked to raise the ambition or standard of a task, prompt or plan.
   Do not use, unless the user asks, for a trivial or mechanical task, a fix whose cause is
-  already known, a task that already has acceptance criteria or a spec, a task whose method
-  the user fixed, a step you take inside a request already briefed (a clarification about the
-  work, fixing a review finding, a status check), or a question that needs only an answer; never
-  use it for executing the task or reviewing finished work.
+  known, a task whose method the user named, a task with a spec or acceptance criteria (a target
+  figure, required sections or a reviewer's pass condition), a step you take inside a briefed
+  request (a clarification or a fix for a review finding), or a question that needs only an
+  answer. A stated audience or limits on scope, length, size, format, budget, time or tools
+  are not a
+  method or acceptance criteria. Never use it to execute a task or review finished work.
 ---
 
 # Raise Ambition

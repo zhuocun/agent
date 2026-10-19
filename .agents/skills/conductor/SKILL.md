@@ -117,7 +117,7 @@ Consult an advisor on every hard decision: one that is consequential to the DoD 
 2. When none of the family's sources offers such a model, take its top-tier model the same way, today Opus for Claude and Sol for GPT.
 3. When no source offers a model of either family, choose each advisor as **Fallbacks** chooses for a role on the Brainstorming and discussion row, except that the advisor takes the strongest model the available sources offer, too-expensive-edge models included.
 4. On a mode-only route, carry the advisor in the standard full-capability mode, as any role.
-5. When a dispatch fails at run time, treat that source's catalog as not offering that model and apply steps 1–3 again.
+5. When a dispatch fails at run time, apply steps 1–3 again to that dispatch with its source's catalog treated as not offering its model; each later dispatch starts from step 1.
 6. When only one advisor can run, consult it alone; when no route can run one, decide on your own grounding, or escalate when you cannot ground it.
 
 On a CLI route, apply `references/cli-dispatch.md` with the advisor's model in place of the top-tier model it names, pin that model's full ID, and set aside the reference's bans on too-expensive-edge models.

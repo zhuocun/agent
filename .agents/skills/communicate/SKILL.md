@@ -1,7 +1,11 @@
 ---
 name: communicate
 description: >-
-  Govern how you write to the user — the shape of a message, the register, and what a claim must rest on — rather than what work you do or how rigorously you do it. Use for every message you write to the user — any reply, progress update, hand-off note, or closing summary — above all after long or unattended work, where your message is the reader's only view of what happened. Do not use as an editing pass over text the user wrote, and do not apply it to artifacts that carry their own conventions — code, commit messages, documents, specs, or product copy.
+  Govern how you write to the user: the shape of a message, its register, and what each claim
+  must rest on. Use for every message you write to the user, including any reply, progress
+  update, hand-off note, or closing summary. Do not use as an editing pass over text the user
+  wrote, or for artifacts that carry their own conventions: code, commit messages, documents,
+  specs, and product copy.
 ---
 
 # Communicate

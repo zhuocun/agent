@@ -1,6 +1,11 @@
 ---
 name: conductor
-description: Orchestrate parallel subagents as the primary performers of research, audit, implementation, and review work, while you keep the planning, integration and done decisions. Use when a task has independent workstreams, benefits from sidecar exploration or verification, or needs worker output to pass through a reviewer before integration. Do not use when no subagent launcher is available or the user or host prohibits delegation, or for a genuinely tiny single-step task that is faster to do locally.
+description: >-
+  Orchestrate parallel subagents as the primary performers of research, audit, implementation,
+  and review work. Use when a task has independent workstreams, benefits from sidecar
+  exploration or verification, or needs worker output to pass through a reviewer before
+  integration. Do not use when no subagent launcher is available or the user or host prohibits
+  delegation, or for a genuinely tiny single-step task that is faster to do locally.
 ---
 
 # Conductor

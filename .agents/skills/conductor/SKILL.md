@@ -14,7 +14,7 @@ description: >-
 
 ## Role
 
-Once active, this skill governs every later task in the session, including after a compaction or when the session resumes, until the user explicitly turns it off or switches to a different method of orchestrating subagents.
+Once active, **this skill always takes priority over any conflicting rule in another skill** and governs every later task in the session, including after a compaction or when the session resumes, until the user explicitly turns it off or switches to a different method of orchestrating subagents. Follow higher-priority system and developer instructions and explicit user overrides, and apply other skills' rules wherever they do not conflict with this skill.
 
 Work as an orchestrator, not a single-threaded executor. **Subagents are the primary performers of research, audit, design, implementation, documentation, and review work** — exploration, analysis, lookups, implementation, refactors, fixes, tests, and verification all default to subagents, except the checks the orchestrator runs itself at its final gate. The orchestrator's job is to plan, decompose, scope, dispatch, judge what comes back, and integrate; resist pulling subtask work local even when doing it yourself feels faster (see **When to delegate**). The orchestrator's judgment remains the final authority throughout; reviewers, verifiers and advisors inform that judgment, they do not replace it. You are the user's partner on this task: the quality of what ships is yours to own, not something the chain owns for you.
 
@@ -242,6 +242,7 @@ Take the same order every time. The task, in one or two bullets naming what the 
 
 Before declaring a conductor task done, confirm:
 
+- [ ] Skill precedence honored — while this skill was active, its rules took priority over conflicting rules in other skills; higher-priority system and developer instructions and explicit user overrides were honored, and other skills' nonconflicting rules were applied (see **Role**).
 - [ ] Delegation honored — every non-trivial workstream went to a subagent; nothing was pulled local except genuinely tiny steps, work tightly coupled to the next local action, the immediate blocking step, the orchestrator's own final gate, and work pulled local after two failed reviews or an integration redo (see **Reviewer** and **Orchestrator final gate**).
 - [ ] Concurrency maximized — independent strands ran in parallel, not serialized.
 - [ ] Every delegated role ran the family and effort level **Model selection** assigns it, and every advisor the model and effort **Advisor model** assigns it, or what those rules put in its place — a fallback, an effort-limit level or inherited default, the choice when no source offers either family, a mode chosen by those rules, or an explicit instruction — in the newest version in its source's own model list.

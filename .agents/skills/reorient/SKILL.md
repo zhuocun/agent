@@ -46,7 +46,7 @@ For the next one or two to-dos, list what you would need to do them correctly: t
 
 Give a concise recap:
 
-1. **What we have been doing** — the goal, in a sentence or two.
+1. **What we have been doing** — the task goal.
 2. **What is finished** — each item backed by a verifiable anchor (commit sha, PR number, merged/CI state, file, or wherever a non-git output lives), so the user can check it. List unverified items apart, marked unverified.
 3. **The to-dos** — the ordered remaining work from Pass 3, each in-progress item with its running state and the evidence for it.
 

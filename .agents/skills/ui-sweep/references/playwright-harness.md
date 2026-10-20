@@ -220,6 +220,16 @@ const run = async () => {
             if (unmocked.length) { gaps.push(name); console.log("    UNMOCKED:", unmocked.join(", ")); }
             if (errs.length) console.log("    pageerror:", errs.join(" | "));
             if (logs.length) console.log("    console.error:", logs.join(" | "));
+            try {
+                const info = await page.evaluate(() => ({
+                    url: location.href,
+                    loading: document.body?.innerText.toLowerCase().includes("loading") ?? false,
+                    text: (document.body?.innerText ?? "").replace(/\s+/g, " ").slice(0, 300)
+                }));
+                console.log("    page:", JSON.stringify(info));
+            } catch (e) {
+                console.log("    page: unavailable", e.message);
+            }
             await context.close();
         }
     }
@@ -254,16 +264,17 @@ misses.
 
 ## One-shot root-cause probe (step 6)
 
-The harness already prints each shot's API hits, page errors and console
-errors. When a shot is blank, stuck or odd, don't guess from code — filter
-`captures` to that entry, give it a `steps` function that runs the dump
-below (steps run after the content wait), and re-run:
+The harness prints each shot's API hits, page errors and console errors.
+It also prints a `page:` dump from `finally`, before the context closes,
+whether or not the content wait passed. For a blank, stuck or odd shot,
+filter `captures` to that entry, re-run, and read those lines together.
+The dump evaluates:
 
 ```js
 const info = await page.evaluate(() => ({
     url: location.href,
-    loading: document.body.innerText.toLowerCase().includes("loading"),
-    text: document.body.innerText.replace(/\s+/g, " ").slice(0, 300)
+    loading: document.body?.innerText.toLowerCase().includes("loading") ?? false,
+    text: (document.body?.innerText ?? "").replace(/\s+/g, " ").slice(0, 300)
 }));
 console.log(info);
 // "only identity endpoints in api:, the route's own queries never fired" ⇒

@@ -24,7 +24,7 @@ Run the skill once per task, and on your own initiative for every later task in 
 
 ## The brief
 
-Slots in this order, grouped under the four lens headings, at most about 40 lines, headings not counted:
+Use the slots in this order under the four lens headings. Keep the brief easy to scan and complete enough to execute:
 
 ```
 Task as given:          <the original task, verbatim>
@@ -180,4 +180,4 @@ Definition of done: 2 of 3 test readers restate the thesis and its main evidence
 - [ ] The Schedule has a deadline and the time of the first outside check; when time is the binding constraint, it also has the critical path, parallel lines and waits removed.
 - [ ] Every item pass 6 requires consent for is in Confirm before starting, and no work that depends on those items starts until the user agrees.
 - [ ] Neither the brief nor its reading obtains access, spends money, contacts anyone outside or takes an irreversible step on its own authority.
-- [ ] Out of scope is filled; one brief of at most about 40 lines, headings not counted, in the task's language, naming only resources the check found, and given verbatim to whoever continues the work.
+- [ ] Out of scope is filled; there is one brief, easy to scan and complete enough to execute, in the task's language, naming only resources the check found, and given verbatim to whoever continues the work.

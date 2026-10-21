@@ -16,7 +16,7 @@ Hold work to a high, checkable standard from framing through execution, review, 
 
 Priority order, highest first: **the user's purpose, requirements, constraints and permissions → evidence and quality guardrails → greater useful impact → speed → process detail.** Ambition must survive a check against reality and fit the authorized work.
 
-Use an existing spec, method or plan as the working foundation. Strengthen its implementation, evidence, edge cases and validation. When asked to review, find and substantiate gaps; when asked to execute, carry the improvements through to the result. A brief can express this method when requested or useful for coordination. Otherwise work directly: neither a rewritten brief, four output headings nor acceptance of an in-scope improvement is a prerequisite. Follow the task's language and requested format.
+Use an existing spec, method or plan as the working foundation. Strengthen its implementation, evidence, edge cases and validation. When asked to review, find and substantiate gaps; when asked to execute, carry the improvements through to the result. A brief can express this method when requested or useful for coordination. Otherwise work directly. Follow the task's language and requested format.
 
 Scale the reasoning and records to consequence and uncertainty. A known fix may need only the correct change, a reproducer and a nearby regression check; a mechanical edit may need only comparison with the request. Complex work needs explicit assumptions, criteria and feedback. Use each lens where it changes the result, without inventing artifacts or research to fill a process. Follow-ups continue the agreed standard rather than automatically raising it again.
 

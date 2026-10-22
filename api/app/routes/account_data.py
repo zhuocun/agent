@@ -242,7 +242,7 @@ async def export_account(
         exported_at=datetime.now(UTC).isoformat(),
     )
     return JSONResponse(
-        content=export.model_dump(by_alias=True),
+        content=export.model_dump(by_alias=True, mode="json"),
         headers={"Content-Disposition": 'attachment; filename="account-export.json"'},
     )
 

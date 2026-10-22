@@ -603,6 +603,21 @@ export function ChatThread() {
   // real AbortController). `beginTurn` checks this after the await resolves and
   // bails out of `start()` so an early Stop cleanly cancels the turn. (P0-1)
   const abortBeforeStartRef = useRef(false);
+  // Monotonic id for `beginTurn`. New chat, select, Stop, toggle-temporary,
+  // and a newer beginTurn bump it. After every await, a mismatched generation
+  // drops the create: no active id, no sidebar insert, no message POST.
+  const turnGenerationRef = useRef(0);
+  // One preferences PUT at a time. A newer edit replaces the pending snapshot
+  // and aborts the in-flight request; the base token is the updatedAt that
+  // edit was written against.
+  const preferencesFlightRef = useRef<AbortController | null>(null);
+  const preferencesLoopRef = useRef(false);
+  const preferencesBaseRef = useRef<string | null | undefined>(undefined);
+  // Last snapshot whose PUT returned 204, or the bootstrap snapshot if none
+  // has. An aborted PUT must not replace it: the next failure rolls back here,
+  // not to that aborted optimistic edit.
+  const preferencesConfirmedRef = useRef<UserPreferences | null>(null);
+  const preferencesPendingRef = useRef<UserPreferences | null>(null);
   // Latest in-flight `fetchConversation` request id; the load callback drops
   // its response if a faster selection has since superseded it.
   const selectConversationTokenRef = useRef<string | null>(null);
@@ -687,6 +702,11 @@ export function ChatThread() {
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
   >(null);
+  // Live id for handlers that resolve after an await. The closure value from
+  // the click is stale if the user opens a different chat while a bulk delete
+  // is still in flight.
+  const activeConversationIdRef = useRef<string | null>(activeConversationId);
+  activeConversationIdRef.current = activeConversationId;
   const [conversationSearch, setConversationSearch] = useState("");
   const [conversationSearchState, setConversationSearchState] =
     useState<ConversationSearchState | null>(null);
@@ -1036,7 +1056,27 @@ export function ChatThread() {
     // is left for the reload to resolve.
     const resumed = resumedApprovalRef.current;
     resumedApprovalRef.current = null;
-    if (resumed && result.status !== "error") {
+    if (resumed && result.status === "error") {
+      // The resume optimistically flipped the card off "pending". A conflict
+      // or any other non-STREAM_IN_PROGRESS failure has to put it back so the
+      // user can decide again. STREAM_IN_PROGRESS never reaches this terminal.
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.role !== "assistant") return m;
+          let touched = false;
+          const parts = m.parts.map((p) => {
+            if (p.type !== "tool_call" || p.id !== resumed.toolCallId) return p;
+            touched = true;
+            return {
+              ...p,
+              approvalState: "pending" as const,
+              status: "awaiting_approval" as const,
+            };
+          });
+          return touched ? { ...m, parts } : m;
+        }),
+      );
+    } else if (resumed && result.status !== "error") {
       const streamed = result.toolParts.find(
         (p) => p.type === "tool_result" && p.toolCallId === resumed.toolCallId,
       );
@@ -1405,10 +1445,14 @@ export function ChatThread() {
   // optimistic user bubble, and clear the synchronous busy state so the composer
   // re-arms. (P0-1 requirement (a))
   const handleStop = () => {
+    turnGenerationRef.current += 1;
     // Compare mode owns its own per-column streams; fan Stop out to all of them
     // (the single-stream `stop()` below is inert here — no main stream is in
     // flight in compare mode).
     if (compareMode) {
+      // A compare create that has not returned yet must not fan out after Stop.
+      // resetCompareTurn is the other bump; Stop does not go through it.
+      compareTokenRef.current += 1;
       compareViewRef.current?.stopAll();
       setLiveMessage("Generation stopped");
       return;
@@ -1456,6 +1500,7 @@ export function ChatThread() {
       attachments?: AttachmentPart[];
       agenticMode?: AgenticMode;
     }): Promise<void> => {
+      const generation = ++turnGenerationRef.current;
       abortBeforeStartRef.current = false;
       let conversationId = activeConversationId;
       if (!conversationId) {
@@ -1472,6 +1517,9 @@ export function ChatThread() {
             providerId: args.providerId,
             ...(projectIdForCreate ? { projectId: projectIdForCreate } : {}),
           });
+          // Stop, navigation, or a newer send bumped the generation while this
+          // create was in flight. Do not select the row or POST this prompt.
+          if (generation !== turnGenerationRef.current) return;
           // Stop pressed during the create round-trip — abandon this turn
           // before arming the stream. handleStop already cleared the optimistic
           // bubble + pendingId; just don't create/insert/start. (P0-1)
@@ -1494,6 +1542,7 @@ export function ChatThread() {
             setConversations((prev) => [summary, ...prev]);
           }
         } catch (cause) {
+          if (generation !== turnGenerationRef.current) return;
           const title =
             cause instanceof ApiError ? cause.title : "Couldn't start chat";
           setLiveMessage(title);
@@ -1532,6 +1581,8 @@ export function ChatThread() {
           return;
         }
       }
+
+      if (generation !== turnGenerationRef.current) return;
 
       plainSendRef.current =
         !args.regenerate &&
@@ -1672,6 +1723,10 @@ export function ChatThread() {
   // toggle temporary), so leaving compare never strands a streaming column or
   // a stale prompt bubble.
   const resetCompareTurn = useCallback(() => {
+    // Bump before the in-flight create returns. A token captured by
+    // handleCompareSend then no longer matches, so that create cannot
+    // setCompareTurn and fan the columns out.
+    compareTokenRef.current += 1;
     compareViewRef.current?.stopAll();
     setCompareTurn(null);
     setCompareUserMessage(null);
@@ -1738,6 +1793,7 @@ export function ChatThread() {
       parts: [{ type: "text", text }],
     });
     setLiveMessage("Comparing two models");
+    const token = ++compareTokenRef.current;
     void (async () => {
       try {
         const created = await createConversation({
@@ -1745,7 +1801,7 @@ export function ChatThread() {
           isTemporary: true,
           providerId: effectiveProviderId,
         });
-        const token = ++compareTokenRef.current;
+        if (compareTokenRef.current !== token) return;
         setCompareTurn({
           token,
           text,
@@ -1753,6 +1809,7 @@ export function ChatThread() {
           clientMessageIds: compareTierIds.map(() => crypto.randomUUID()),
         });
       } catch (cause) {
+        if (compareTokenRef.current !== token) return;
         setCompareUserMessage(null);
         composerRef.current?.setDraft(text);
         const title =
@@ -2243,6 +2300,7 @@ export function ChatThread() {
   };
 
   const handleNewChat = () => {
+    turnGenerationRef.current += 1;
     // Cancel any in-flight welcome→thread seam (see handleSelectConversation
     // for the corruption shape). New chat nulls activeConversationId, so a
     // pending exit timer firing here would commitTurn() into the wrong
@@ -2290,6 +2348,7 @@ export function ChatThread() {
   // Turning it OFF just exits temporary mode and keeps the current messages —
   // any subsequent send creates a real (persisted) conversation lazily.
   const handleToggleTemporary = () => {
+    turnGenerationRef.current += 1;
     if (isTemporary) {
       setIsTemporary(false);
       return;
@@ -2335,6 +2394,7 @@ export function ChatThread() {
   };
 
   const handleSelectConversation = (id: string) => {
+    turnGenerationRef.current += 1;
     // Cancel any in-flight welcome→thread seam. Without this, an exit timer
     // scheduled against the previous (empty) conversation would fire after we
     // switch — calling commitTurn() with the closure-captured `text` and
@@ -2428,6 +2488,13 @@ export function ChatThread() {
 
   const handleDeleteConversation = (id: string) => {
     const previous = conversations;
+    const restoreOpenThread = id === activeConversationId;
+    const threadMessages = messages;
+    const threadId = activeConversationId;
+    // A later New chat or select bumps this. The catch must not write the
+    // click-time transcript over the chat the user opened while DELETE was in
+    // flight.
+    const deleteGeneration = turnGenerationRef.current;
     setConversations((prev) => prev.filter((c) => c.id !== id));
     if (id === activeConversationId) {
       // Cancel any in-flight welcome→thread seam — same data-corruption guard
@@ -2447,6 +2514,14 @@ export function ChatThread() {
     }
     void deleteConversation(id).catch((cause) => {
       setConversations(previous);
+      if (
+        restoreOpenThread &&
+        deleteGeneration === turnGenerationRef.current &&
+        activeConversationIdRef.current === null
+      ) {
+        setMessages(threadMessages);
+        setActiveConversationId(threadId);
+      }
       if (cause instanceof ApiError) setLiveMessage(cause.title);
       showToast({
         severity: "error",
@@ -2806,16 +2881,21 @@ export function ChatThread() {
     const previous = conversations;
     const idSet = new Set(ids);
     setConversations((prev) => prev.filter((c) => !idSet.has(c.id)));
-    if (activeConversationId && idSet.has(activeConversationId)) {
-      handleNewChat();
-    }
     void bulkConversationAction({
       conversationIds: ids,
       action: "delete",
-    }).catch((cause) => {
-      setConversations(previous);
-      showMutationError(cause, "Couldn't delete conversations");
-    });
+    })
+      .then(() => {
+        // A chat opened while this request was in flight is not one of the
+        // deleted ids anymore. Only the still-open deleted chat becomes a
+        // new chat.
+        const currentId = activeConversationIdRef.current;
+        if (currentId && idSet.has(currentId)) handleNewChat();
+      })
+      .catch((cause) => {
+        setConversations(previous);
+        showMutationError(cause, "Couldn't delete conversations");
+      });
   };
 
   // Bulk add/remove a tag across the selected conversations.
@@ -2866,29 +2946,112 @@ export function ChatThread() {
   // tier.changed event on top) and the composer popup persistence below (whose
   // tier/provider changes already report their own chat-surface telemetry, so
   // routing them through here avoids a duplicate settings-surface event).
+  async function drainPreferences(): Promise<void> {
+    let staleRetries = 0;
+    for (;;) {
+      while (preferencesPendingRef.current) {
+        const snapshot = preferencesPendingRef.current;
+        preferencesPendingRef.current = null;
+        const controller = new AbortController();
+        preferencesFlightRef.current = controller;
+        const base =
+          preferencesBaseRef.current !== undefined
+            ? preferencesBaseRef.current
+            : snapshot.updatedAt;
+        try {
+          const result = await putPreferences(snapshot, {
+            ...(base !== undefined ? { baseUpdatedAt: base } : {}),
+            signal: controller.signal,
+          });
+          preferencesConfirmedRef.current = result.updatedAt
+            ? { ...snapshot, updatedAt: result.updatedAt }
+            : snapshot;
+          if (result.updatedAt) {
+            preferencesBaseRef.current = result.updatedAt;
+            const stored = result.updatedAt;
+            setBootstrap((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    preferences: { ...prev.preferences, updatedAt: stored },
+                  }
+                : prev,
+            );
+          }
+          staleRetries = 0;
+        } catch (cause) {
+          if (controller.signal.aborted) {
+            staleRetries = 0;
+            continue;
+          }
+          if (cause instanceof ApiError && cause.code === "PREFERENCES_STALE") {
+            const metaUpdatedAt = cause.meta?.updatedAt;
+            preferencesBaseRef.current =
+              typeof metaUpdatedAt === "string" ? metaUpdatedAt : null;
+            if (!preferencesPendingRef.current && staleRetries < 1) {
+              staleRetries += 1;
+              preferencesPendingRef.current = snapshot;
+            } else {
+              staleRetries = 0;
+            }
+            continue;
+          }
+          if (preferencesPendingRef.current) {
+            staleRetries = 0;
+            continue;
+          }
+          const confirmed = preferencesConfirmedRef.current;
+          if (confirmed) {
+            setBootstrap((prev) =>
+              prev ? { ...prev, preferences: confirmed } : prev,
+            );
+          }
+          if (cause instanceof ApiError) setLiveMessage(cause.title);
+          // Surface the rollback to sighted users too (e.g. a 429), matching the
+          // rename / pin handlers — a silent revert is invisible otherwise. (P1-2)
+          showToast({
+            severity: "error",
+            title:
+              cause instanceof ApiError
+                ? cause.title
+                : "Couldn't save your preferences",
+            body:
+              cause instanceof ApiError
+                ? cause.body
+                : cause instanceof Error
+                  ? cause.message
+                  : undefined,
+          });
+          staleRetries = 0;
+        } finally {
+          if (preferencesFlightRef.current === controller) {
+            preferencesFlightRef.current = null;
+          }
+        }
+      }
+      if (preferencesPendingRef.current) continue;
+      preferencesLoopRef.current = false;
+      if (preferencesPendingRef.current) {
+        preferencesLoopRef.current = true;
+        continue;
+      }
+      return;
+    }
+  }
+
   const commitPreferences = (next: UserPreferences) => {
     if (!bootstrap) return;
-    const previous = bootstrap.preferences;
+    if (preferencesConfirmedRef.current === null) {
+      preferencesConfirmedRef.current = bootstrap.preferences;
+    }
     setBootstrap({ ...bootstrap, preferences: next });
-    void putPreferences(next).catch((cause) => {
-      setBootstrap((prev) =>
-        prev ? { ...prev, preferences: previous } : prev,
-      );
-      if (cause instanceof ApiError) setLiveMessage(cause.title);
-      // Surface the rollback to sighted users too (e.g. a 429), matching the
-      // rename / pin handlers — a silent revert is invisible otherwise. (P1-2)
-      showToast({
-        severity: "error",
-        title:
-          cause instanceof ApiError ? cause.title : "Couldn't save your preferences",
-        body:
-          cause instanceof ApiError
-            ? cause.body
-            : cause instanceof Error
-              ? cause.message
-              : undefined,
-      });
-    });
+    preferencesPendingRef.current = next;
+    if (preferencesFlightRef.current || preferencesLoopRef.current) {
+      preferencesFlightRef.current?.abort();
+      return;
+    }
+    preferencesLoopRef.current = true;
+    void drainPreferences();
   };
 
   const handlePreferencesChange = (next: UserPreferences) => {
@@ -4130,7 +4293,7 @@ export function ChatThread() {
                 isTemporary={isTemporary}
                 statusBannerActive={degradedActive}
               >
-                {messages.map((m) => {
+                {messages.map((m, index) => {
                   const canBranchMessage =
                     !!activeConversationId &&
                     !isTemporary &&
@@ -4169,8 +4332,14 @@ export function ChatThread() {
                       }
                       isAwaitingApproval={
                         !isStreaming &&
-                        m.id === lastAssistantId &&
-                        m.status === "awaiting_approval"
+                        m.status === "awaiting_approval" &&
+                        !messages
+                          .slice(index + 1)
+                          .some(
+                            (later) =>
+                              later.role === "assistant" &&
+                              later.status !== "error",
+                          )
                       }
                       onBranch={
                         canBranchMessage

@@ -83,6 +83,7 @@ async def test_bootstrap_returns_defaults_when_no_row(
         "webSearchDefault": False,
         "jsonModeDefault": False,
         "deepResearchDefault": False,
+        "updatedAt": None,
     }
     # Bootstrap should NOT silently insert a row.
     assert await _row_count(session_factory) == 0
@@ -101,7 +102,9 @@ async def test_put_then_bootstrap_returns_new_values(
 
     boot = await client.get("/api/bootstrap")
     assert boot.status_code == 200
-    assert boot.json()["preferences"] == _VALID_BODY
+    saved = boot.json()["preferences"]
+    assert saved.pop("updatedAt") is not None
+    assert saved == _VALID_BODY
 
 
 async def test_put_accepts_retention_forever(
@@ -303,7 +306,9 @@ async def test_put_replaces_existing(
         assert rows[0].send_on_enter is True
 
     boot = await client.get("/api/bootstrap")
-    assert boot.json()["preferences"] == second_body
+    saved = boot.json()["preferences"]
+    assert saved.pop("updatedAt") is not None
+    assert saved == second_body
 
 
 async def test_put_persists_per_user(
@@ -531,3 +536,153 @@ async def test_put_omitted_popup_selections_preserve_existing(
     assert prefs["webSearchDefault"] is True
     assert prefs["jsonModeDefault"] is True
     assert prefs["deepResearchDefault"] is True
+
+
+def _prefs_body(**overrides: object) -> dict[str, object]:
+    body: dict[str, object] = dict(_VALID_BODY)
+    body.update(overrides)
+    return body
+
+
+async def test_stale_preferences_put_does_not_purge(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A superseded retention write must not delete chats.
+
+    A current write with retention forever keeps an old chat. A later write
+    that still carries the pre-write instant is rejected and leaves both the
+    forever row and the chat. A write that carries the new instant may purge.
+    Omitting baseUpdatedAt still saves for old clients.
+    """
+    boot = await client.get("/api/bootstrap")
+    assert boot.status_code == 200
+
+    async with session_factory() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        original = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        session.add(
+            Preferences(
+                user_id=user.id,
+                default_tier_id="smart",
+                retention_days=None,
+                updated_at=original,
+            )
+        )
+        session.add(
+            Conversation(
+                user_id=user.id,
+                title="old chat",
+                selected_tier_id="smart",
+                pinned=False,
+                updated_at=datetime.now(UTC) - timedelta(days=45),
+            )
+        )
+        await session.commit()
+        user_id = user.id
+
+    async with session_factory() as session:
+        stored_at = (
+            await session.execute(
+                select(Preferences.updated_at).where(Preferences.user_id == user_id)
+            )
+        ).scalar_one()
+    if stored_at.tzinfo is None:
+        stored_at = stored_at.replace(tzinfo=UTC)
+    base = stored_at.isoformat()
+
+    keep = await client.put(
+        "/api/preferences",
+        json=_prefs_body(retentionDays=None, baseUpdatedAt=base),
+    )
+    assert keep.status_code == 204
+
+    async with session_factory() as session:
+        assert (await session.execute(select(Conversation.id))).scalar_one_or_none() is not None
+
+    stale = await client.put(
+        "/api/preferences",
+        json=_prefs_body(retentionDays=30, baseUpdatedAt=base),
+    )
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "PREFERENCES_STALE"
+    new_base = keep.headers["x-preferences-updated-at"]
+    assert stale.json()["error"]["meta"]["updatedAt"] == new_base
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(Preferences).where(Preferences.user_id == user_id))
+        ).scalar_one()
+        assert row.retention_days is None
+        assert (await session.execute(select(Conversation.id))).scalar_one_or_none() is not None
+
+    echoed = (await client.get("/api/bootstrap")).json()["preferences"]["updatedAt"]
+    assert echoed == new_base
+
+    current = await client.put(
+        "/api/preferences",
+        json=_prefs_body(retentionDays=30, baseUpdatedAt=new_base),
+    )
+    assert current.status_code == 204
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(Preferences).where(Preferences.user_id == user_id))
+        ).scalar_one()
+        assert row.retention_days == 30
+        assert (await session.execute(select(Conversation.id))).scalar_one_or_none() is None
+
+    omitted = await client.put(
+        "/api/preferences",
+        json=_prefs_body(retentionDays=90),
+    )
+    assert omitted.status_code == 204
+    assert omitted.headers["x-preferences-updated-at"]
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(Preferences).where(Preferences.user_id == user_id))
+        ).scalar_one()
+        assert row.retention_days == 90
+
+
+async def test_stale_preferences_put_without_row_does_not_insert(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A baseUpdatedAt on a user with no row is a conflict, not an insert."""
+    await client.get("/api/bootstrap")
+    response = await client.put(
+        "/api/preferences",
+        json=_prefs_body(retentionDays=30, baseUpdatedAt="2026-01-01T00:00:00+00:00"),
+    )
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "PREFERENCES_STALE"
+    assert error["meta"]["updatedAt"] is None
+    assert await _row_count(session_factory) == 0
+
+
+async def test_preferences_base_updated_at_matches_equivalent_instant(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A +01:00 timestamp matches the same UTC instant stored on the row."""
+    await client.get("/api/bootstrap")
+    async with session_factory() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        session.add(
+            Preferences(
+                user_id=user.id,
+                default_tier_id="smart",
+                retention_days=None,
+                updated_at=datetime(2026, 6, 1, 12, 30, tzinfo=UTC),
+            )
+        )
+        await session.commit()
+
+    response = await client.put(
+        "/api/preferences",
+        json=_prefs_body(retentionDays=None, baseUpdatedAt="2026-06-01T13:30:00+01:00"),
+    )
+    assert response.status_code == 204
+    assert response.headers["x-preferences-updated-at"]

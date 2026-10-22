@@ -96,6 +96,9 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
   // A-14: synchronous double-submit guard — disable after the first click even
   // before the parent flips isStreaming / approvalState.
   const [decisionBusy, setDecisionBusy] = useState(false);
+  // Previous value of `showApprovalControls`, so a card that returns to pending
+  // can clear the click latch during render instead of in an effect.
+  const [approvalControlsShown, setApprovalControlsShown] = useState(false);
   const isResult = part.type === "tool_result";
   const status = part.status ?? (isResult ? "succeeded" : "pending");
   const approvalState = part.approvalState ?? "not_required";
@@ -126,6 +129,15 @@ export function ToolPartView({ part, onDecision, embedded = false }: ToolPartVie
     status === "awaiting_approval" &&
     approvalState === "pending" &&
     onDecision !== undefined;
+  // The same view stays mounted when a failed resume puts the card back to
+  // pending. The click already latched `decisionBusy`, so the restored
+  // approve/deny buttons would stay disabled and a second decision could not
+  // be sent. Clear the latch only once the controls are shown again — not on
+  // the click itself, which must stay disabled until the parent flips status.
+  if (showApprovalControls !== approvalControlsShown) {
+    setApprovalControlsShown(showApprovalControls);
+    if (showApprovalControls) setDecisionBusy(false);
+  }
   const toolCallId = part.type === "tool_call" ? part.id : undefined;
   // Settled tool runs carry no live info, so collapse their detail + pills
   // behind a one-line summary (progressive disclosure) and let the user expand

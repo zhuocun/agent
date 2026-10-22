@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints
@@ -82,6 +83,8 @@ class UserPreferences(CamelModel):
     web_search_default: bool = False
     json_mode_default: bool = False
     deep_research_default: bool = False
+    # Row mutation instant. None on the hard-coded defaults (no row yet).
+    updated_at: datetime | None = None
 
 
 class UserPreferencesRequest(CamelModel):
@@ -117,3 +120,7 @@ class UserPreferencesRequest(CamelModel):
     web_search_default: bool | None = None
     json_mode_default: bool | None = None
     deep_research_default: bool | None = None
+    # Optimistic concurrency token. Omitted by old clients, which keep the
+    # unversioned replace-and-purge behavior. When set, the write proceeds
+    # only if it matches the stored row instant.
+    base_updated_at: datetime | None = None

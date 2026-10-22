@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { RotateCw } from "lucide-react";
 import Link from "next/link";
-import { Loader2, MessageSquareText } from "lucide-react";
+import { FileText, Image as ImageIcon, Loader2, MessageSquareText, RotateCw } from "lucide-react";
 
 import {
   AgenticAssistantParts,
@@ -13,7 +12,12 @@ import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { PublicAttributionRow } from "@/components/share/public-attribution-row";
 import { Button } from "@/components/ui/button";
 import { ApiError, fetchPublicConversation } from "@/lib/apiClient";
-import type { PublicConversation, PublicMessage } from "@/lib/types";
+import { formatAttachmentSize } from "@/lib/format-attachment-size";
+import type {
+  AttachmentPart,
+  PublicConversation,
+  PublicMessage,
+} from "@/lib/types";
 
 // Read-only public-by-link snapshot. NO composer, NO sidebar, NO message
 // actions (copy/regenerate/feedback), NO edit — anyone with the link reads a
@@ -176,6 +180,38 @@ function ConversationBody({
   );
 }
 
+function PublicAttachmentChips({
+  attachments,
+}: {
+  attachments: AttachmentPart[];
+}) {
+  if (attachments.length === 0) return null;
+  return (
+    <div className="flex flex-wrap justify-end gap-2">
+      {attachments.map((attachment) => (
+        <span
+          key={attachment.id}
+          className="inline-flex h-8 max-w-full items-center gap-2 rounded-full bg-background/45 px-3 ui-caption leading-none text-foreground shadow-[inset_0_0_0_1px_var(--glass-border)]"
+          aria-label={`${attachment.name}, ${attachment.mediaType}, ${formatAttachmentSize(attachment.sizeBytes)}`}
+        >
+          {attachment.mediaType === "image" ? (
+            <ImageIcon aria-hidden className="size-3.5 shrink-0" />
+          ) : (
+            <FileText aria-hidden className="size-3.5 shrink-0" />
+          )}
+          <span className="min-w-0 max-w-[12rem] truncate">{attachment.name}</span>
+          <span className="shrink-0 text-muted-foreground">
+            {attachment.mediaType}
+          </span>
+          <span className="shrink-0 text-muted-foreground">
+            {formatAttachmentSize(attachment.sizeBytes)}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function PublicMessageItem({ message }: { message: PublicMessage }) {
   const { sourcesPanelRef, sourceItems } = useSourcesFromParts(message.parts);
 
@@ -184,6 +220,9 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
       .filter((p) => p.type === "text")
       .map((p) => p.text)
       .join("\n\n");
+    const attachments = message.parts.filter(
+      (p): p is AttachmentPart => p.type === "attachment",
+    );
     return (
       <div
         className="flex flex-col items-end"
@@ -192,9 +231,12 @@ function PublicMessageItem({ message }: { message: PublicMessage }) {
       >
         <div
           data-testid="public-user-message"
-          className="max-w-[85%] whitespace-pre-wrap break-words rounded-3xl bg-brand-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground md:text-[0.9375rem]"
+          className="max-w-[85%] space-y-3 rounded-3xl bg-brand-muted px-5 py-3 text-[1.0625rem] leading-7 text-foreground md:text-[0.9375rem]"
         >
-          {text}
+          {text ? (
+            <div className="whitespace-pre-wrap break-words">{text}</div>
+          ) : null}
+          <PublicAttachmentChips attachments={attachments} />
         </div>
       </div>
     );

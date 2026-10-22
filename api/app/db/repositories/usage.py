@@ -11,12 +11,16 @@ eliminate the SELECT-then-INSERT race. Two concurrent terminals for the
 same (user_id, period_start) key both go through one atomic upsert; the DB
 serializes them so the final `used` reflects every write.
 
-Meter semantics: `usage_rollup.cost_usd` / `used` is a CUMULATIVE METER of all
-work performed in the period, NOT the sum of surviving `message.cost_usd`. Every
-generation that was triggered increments it — including regenerated or edited
-turns whose assistant messages were later deleted. "You pay for every generation
-you triggered." So the rollup will exceed the cost of the messages currently in
-the conversation; that divergence is intentional.
+Meter semantics: `usage_rollup.cost_usd` / `used` is a CUMULATIVE METER of
+platform-key work performed in the period, NOT the sum of surviving
+`message.cost_usd`. Every platform generation that was triggered increments
+`cost_usd` — including regenerated or edited turns whose assistant messages
+were later deleted. BYOK turns increment `used` and the `is_byok` flag but
+add nothing to `cost_usd`, so the platform budget never counts caller-key
+spend. "You pay for every platform generation you triggered." So the rollup
+will exceed the platform cost of the messages currently in the conversation;
+that divergence is intentional. Message `cost_usd` still stores the BYOK
+amount for spend analytics.
 """
 
 from __future__ import annotations
@@ -351,8 +355,11 @@ async def _increment_for_period_unlocked(
     is analytics-only -- see module docstring).
 
     `cost_usd_delta` accumulates alongside `used` on the same atomic upsert so
-    the cost ledger stays in lockstep with the per-turn counter. Defaults to
-    0.0 so existing callers (and the integer-only meter) are unchanged.
+    the platform cost ledger stays in lockstep with the per-turn counter.
+    BYOK turns (`is_byok`) still add `used_delta` and set the flag, but write
+    a zero cost delta — platform budget reads this column and must not count
+    caller-key spend. Defaults to 0.0 so existing callers (and the
+    integer-only meter) are unchanged.
 
     Dialect-specific imports:
     - Postgres (production): `sqlalchemy.dialects.postgresql.insert` gives us
@@ -368,6 +375,8 @@ async def _increment_for_period_unlocked(
     period = period_start if period_start is not None else _month_start()
     previous_cost = await get_period_cost(db, user_id=user_id, period_start=period)
     cost_delta = _round_usd(cost_usd_delta)
+    # Platform ledger only. Message rows keep the real BYOK cost for analytics.
+    ledger_cost = 0.0 if is_byok else cost_delta
 
     dialect = db.bind.dialect.name if db.bind is not None else "sqlite"
     if dialect == "postgresql":
@@ -375,7 +384,7 @@ async def _increment_for_period_unlocked(
             user_id=user_id,
             period_start=period,
             used=used_delta,
-            cost_usd=cost_delta,
+            cost_usd=ledger_cost,
             limit_value=_DEFAULT_LIMIT,
             is_byok=is_byok,
         )
@@ -397,7 +406,7 @@ async def _increment_for_period_unlocked(
             user_id=user_id,
             period_start=period,
             used=used_delta,
-            cost_usd=cost_delta,
+            cost_usd=ledger_cost,
             limit_value=_DEFAULT_LIMIT,
             is_byok=is_byok,
         )
@@ -411,9 +420,9 @@ async def _increment_for_period_unlocked(
         )
         await db.execute(stmt_sq)
 
-    if monthly_quota_usd > 0 and cost_delta > 0 and not is_byok:
+    if monthly_quota_usd > 0 and ledger_cost > 0 and not is_byok:
         previous_overage = max(0.0, previous_cost - monthly_quota_usd)
-        next_overage = max(0.0, previous_cost + cost_delta - monthly_quota_usd)
+        next_overage = max(0.0, previous_cost + ledger_cost - monthly_quota_usd)
         credit_debit = _round_usd(next_overage - previous_overage)
         await _debit_platform_credits_unlocked(
             db,
@@ -467,9 +476,16 @@ async def get_period_cost(
     budget gate in `send_message`.
     """
     period = period_start if period_start is not None else _month_start()
-    stmt = select(UsageRollup).where(
-        UsageRollup.user_id == user_id,
-        UsageRollup.period_start == period,
+    # The increment is a Core upsert, which does not refresh an instance this
+    # session already loaded (the budget check loads it before the write).
+    # populate_existing makes this read return the row just written.
+    stmt = (
+        select(UsageRollup)
+        .where(
+            UsageRollup.user_id == user_id,
+            UsageRollup.period_start == period,
+        )
+        .execution_options(populate_existing=True)
     )
     row = (await db.execute(stmt)).scalar_one_or_none()
     return float(row.cost_usd) if row is not None else 0.0
@@ -646,9 +662,13 @@ async def get_current_budget(
     effective cap so the FE meter reflects the limit actually enforced.
     """
     period = _month_start()
-    stmt = select(UsageRollup).where(
-        UsageRollup.user_id == user_id,
-        UsageRollup.period_start == period,
+    stmt = (
+        select(UsageRollup)
+        .where(
+            UsageRollup.user_id == user_id,
+            UsageRollup.period_start == period,
+        )
+        .execution_options(populate_existing=True)
     )
     row = (await db.execute(stmt)).scalar_one_or_none()
     used = int(row.used) if row is not None else 0
@@ -682,22 +702,38 @@ async def get_current_budget(
     )
 
 
-async def get_conversation_cost(db: AsyncSession, conversation_id: UUID) -> float:
-    """Return the accumulated surviving assistant cost for one conversation.
+def _counts_toward_platform_conversation_cost(attribution: object) -> bool:
+    """BYOK assistant rows are excluded from the per-conversation platform cap.
 
-    `sum(message.cost_usd)` over the conversation's assistant messages that
-    still carry a cost. Drives the per-conversation budget gate in
-    `send_message`. Counts only surviving messages, mirroring the
-    "surviving-messages" cost basis (a regenerated turn whose old assistant row
-    was deleted no longer counts here).
+    Null attribution and any row that is not explicitly `isByok: true` still
+    count. The check is in Python so SQLite and Postgres see the same rule
+    without JSON-path dialect differences.
     """
-    stmt = select(func.coalesce(func.sum(Message.cost_usd), 0)).where(
+    return not (isinstance(attribution, dict) and attribution.get("isByok") is True)
+
+
+async def get_conversation_cost(db: AsyncSession, conversation_id: UUID) -> float:
+    """Return the accumulated surviving platform assistant cost for one conversation.
+
+    Sums `message.cost_usd` over this conversation's assistant messages that
+    still carry a cost and are not BYOK. Drives the per-conversation budget
+    gate in `send_message`. Counts only surviving messages, mirroring the
+    "surviving-messages" cost basis (a regenerated turn whose old assistant row
+    was deleted no longer counts here). Message rows themselves are unchanged;
+    spend analytics that read them still see BYOK dollars.
+    """
+    stmt = select(Message.cost_usd, Message.attribution).where(
         Message.conversation_id == conversation_id,
         Message.role == "assistant",
         Message.cost_usd.is_not(None),
     )
-    total = (await db.execute(stmt)).scalar_one()
-    return _round_usd(float(total or 0.0))
+    rows = (await db.execute(stmt)).all()
+    total = 0.0
+    for cost_usd, attribution in rows:
+        if cost_usd is None or not _counts_toward_platform_conversation_cost(attribution):
+            continue
+        total += float(cost_usd)
+    return _round_usd(total)
 
 
 def _clamp_spend_days(days: int) -> int:

@@ -12,7 +12,7 @@ hit (see `app.routes.bootstrap`).
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependency import current_user
@@ -50,6 +50,7 @@ def _safety_blocked(decision: SafetyDecision) -> AppError:
 @router.put("/preferences", status_code=status.HTTP_204_NO_CONTENT)
 async def put_preferences(
     body: UserPreferencesRequest,
+    response: Response,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -127,7 +128,28 @@ async def put_preferences(
     if not safety_decision.allowed:
         raise _safety_blocked(safety_decision)
 
-    await preferences_repo.upsert(db, user.id, merged)
+    if body.base_updated_at is not None:
+        current = await preferences_repo.get_updated_at(db, user.id)
+        if current is None or not preferences_repo.same_instant(current, body.base_updated_at):
+            raise AppError(
+                ErrorEnvelope(
+                    code="PREFERENCES_STALE",
+                    severity="error",
+                    title="Preferences are out of date",
+                    body="Reload preferences and try the change again.",
+                    meta={
+                        "updatedAt": (
+                            None
+                            if current is None
+                            else preferences_repo.isoformat_utc(current)
+                        ),
+                    },
+                ),
+                status.HTTP_409_CONFLICT,
+            )
+
+    saved_at = await preferences_repo.upsert(db, user.id, merged)
+    response.headers["X-Preferences-Updated-At"] = preferences_repo.isoformat_utc(saved_at)
     # Opportunistic purge with the newly-saved global window. Honors any
     # per-conversation `retention_days` override too (D31), so lowering the
     # global window (or having only per-conversation windows) takes effect now.

@@ -90,6 +90,17 @@ _DEFAULTS = UserPreferences(
 )
 
 
+def _as_utc(value: datetime) -> datetime:
+    """Normalize a datetime to an aware UTC instant.
+
+    Naive values are UTC clock times (SQLite drops tzinfo). Aware values convert
+    so equality and ISO output compare instants, not raw strings or offsets.
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _row_to_schema(row: Preferences) -> UserPreferences:
     # Coerce DB string -> ModelTierId. If somehow the row holds an unknown tier
     # id (manual DB edit, schema drift), fall back to "auto" — same safety net
@@ -121,6 +132,7 @@ def _row_to_schema(row: Preferences) -> UserPreferences:
         web_search_default=row.web_search_default,
         json_mode_default=row.json_mode_default,
         deep_research_default=row.deep_research_default,
+        updated_at=_as_utc(row.updated_at),
     )
 
 
@@ -133,37 +145,61 @@ async def get_or_default(db: AsyncSession, user_id: UUID) -> UserPreferences:
     return _row_to_schema(row)
 
 
-async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> None:
+async def get_updated_at(db: AsyncSession, user_id: UUID) -> datetime | None:
+    """Return the row's updated_at as aware UTC, or None when no row exists."""
+    stmt = select(Preferences.updated_at).where(Preferences.user_id == user_id)
+    value = (await db.execute(stmt)).scalar_one_or_none()
+    if value is None:
+        return None
+    return _as_utc(value)
+
+
+def same_instant(left: datetime, right: datetime) -> bool:
+    """Compare two datetimes as UTC instants, including naive values."""
+    return _as_utc(left) == _as_utc(right)
+
+
+def isoformat_utc(value: datetime) -> str:
+    """ISO-8601 UTC instant, using the same `Z` suffix as the JSON wire."""
+    text = _as_utc(value).isoformat()
+    if text.endswith("+00:00"):
+        return f"{text[:-6]}Z"
+    return text
+
+
+async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> datetime:
     """Insert or update the preferences row for `user_id`.
 
     Cross-dialect upsert via select-then-update-or-insert (matches the votes
-    repo pattern; see `votes.upsert` for the rationale).
+    repo pattern; see `votes.upsert` for the rationale). Returns the new
+    `updated_at` instant (aware UTC).
     """
+    now = datetime.now(UTC)
     stmt = select(Preferences).where(Preferences.user_id == user_id)
     row = (await db.execute(stmt)).scalar_one_or_none()
     if row is None:
-        db.add(
-            Preferences(
-                user_id=user_id,
-                default_tier_id=prefs.default_tier_id,
-                temporary_by_default=prefs.temporary_by_default,
-                training_opt_in=prefs.training_opt_in,
-                send_on_enter=prefs.send_on_enter,
-                auto_expand_reasoning=prefs.auto_expand_reasoning,
-                telemetry_enabled=prefs.telemetry_enabled,
-                custom_instructions=prefs.custom_instructions,
-                retention_days=prefs.retention_days,
-                monthly_budget_usd=prefs.monthly_budget_usd,
-                per_conversation_budget_usd=prefs.per_conversation_budget_usd,
-                memory_enabled=prefs.memory_enabled,
-                keyboard_shortcuts=_shortcuts_to_db(prefs.keyboard_shortcuts),
-                default_reasoning_effort_id=prefs.default_reasoning_effort_id,
-                default_provider_id=prefs.default_provider_id,
-                web_search_default=prefs.web_search_default,
-                json_mode_default=prefs.json_mode_default,
-                deep_research_default=prefs.deep_research_default,
-            )
+        row = Preferences(
+            user_id=user_id,
+            default_tier_id=prefs.default_tier_id,
+            temporary_by_default=prefs.temporary_by_default,
+            training_opt_in=prefs.training_opt_in,
+            send_on_enter=prefs.send_on_enter,
+            auto_expand_reasoning=prefs.auto_expand_reasoning,
+            telemetry_enabled=prefs.telemetry_enabled,
+            custom_instructions=prefs.custom_instructions,
+            retention_days=prefs.retention_days,
+            monthly_budget_usd=prefs.monthly_budget_usd,
+            per_conversation_budget_usd=prefs.per_conversation_budget_usd,
+            memory_enabled=prefs.memory_enabled,
+            keyboard_shortcuts=_shortcuts_to_db(prefs.keyboard_shortcuts),
+            default_reasoning_effort_id=prefs.default_reasoning_effort_id,
+            default_provider_id=prefs.default_provider_id,
+            web_search_default=prefs.web_search_default,
+            json_mode_default=prefs.json_mode_default,
+            deep_research_default=prefs.deep_research_default,
+            updated_at=now,
         )
+        db.add(row)
     else:
         row.default_tier_id = prefs.default_tier_id
         row.temporary_by_default = prefs.temporary_by_default
@@ -184,5 +220,7 @@ async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> Non
         row.deep_research_default = prefs.deep_research_default
         # `updated_at` has no onupdate hook; touch it explicitly so the column
         # reflects the actual mutation time.
-        row.updated_at = datetime.now(UTC)
+        row.updated_at = now
     await db.flush()
+    await db.refresh(row)
+    return _as_utc(row.updated_at)

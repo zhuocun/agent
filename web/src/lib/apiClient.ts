@@ -160,7 +160,7 @@ function isErrorEnvelope(value: unknown): value is { error: ApiErrorEnvelope } {
   );
 }
 
-async function request<T>(path: string, opts: RequestOptions): Promise<T> {
+async function sendRequest(path: string, opts: RequestOptions): Promise<Response> {
   const url = resolveUrl(path);
   const headers: Record<string, string> = {};
   let body: string | undefined;
@@ -171,9 +171,8 @@ async function request<T>(path: string, opts: RequestOptions): Promise<T> {
     body = JSON.stringify(opts.body);
   }
 
-  let response: Response;
   try {
-    response = await fetch(url, {
+    return await fetch(url, {
       method: opts.method,
       credentials: "include",
       headers,
@@ -186,7 +185,13 @@ async function request<T>(path: string, opts: RequestOptions): Promise<T> {
       cause,
     );
   }
+}
 
+async function readResponse<T>(
+  response: Response,
+  method: string,
+  path: string,
+): Promise<T> {
   if (response.status === 204) {
     return undefined as T;
   }
@@ -197,7 +202,7 @@ async function request<T>(path: string, opts: RequestOptions): Promise<T> {
   } catch (cause) {
     if (response.ok) {
       throw new ApiNetworkError(
-        `Response from ${opts.method} ${url} was not valid JSON`,
+        `Response from ${method} ${path} was not valid JSON`,
         cause,
       );
     }
@@ -228,6 +233,11 @@ async function request<T>(path: string, opts: RequestOptions): Promise<T> {
   }
 
   return parsed as T;
+}
+
+async function request<T>(path: string, opts: RequestOptions): Promise<T> {
+  const response = await sendRequest(path, opts);
+  return readResponse<T>(response, opts.method, path);
 }
 
 // --- Verb methods -----------------------------------------------------------
@@ -440,11 +450,44 @@ export function deleteShareLink(
 // (`defaultReasoningEffortId`, `defaultProviderId`, `webSearchDefault`,
 // `jsonModeDefault`, `deepResearchDefault`) ride this same wire path as every
 // other preference.
-export function putPreferences(
+export interface PutPreferencesOptions {
+  // The `updatedAt` this edit was based on. Omitted when the client has never
+  // seen a token. `null` is sent when the server said the row has none.
+  baseUpdatedAt?: string | null;
+  signal?: AbortSignal;
+}
+
+export interface PutPreferencesResult {
+  // Value of `X-Preferences-Updated-At` on a 204, or null when the header is
+  // absent. Callers store a string as the next `baseUpdatedAt`.
+  updatedAt: string | null;
+}
+
+// Replace the caller's saved preferences. The body is the preference fields
+// plus optional `baseUpdatedAt` (not the row's own `updatedAt`). A 409
+// `PREFERENCES_STALE` throws `ApiError` with `meta.updatedAt`; the caller
+// retries. Success is 204.
+export async function putPreferences(
   prefs: UserPreferences,
-  signal?: AbortSignal,
-): Promise<void> {
-  return apiClient.put<void>("/api/preferences", prefs, signal);
+  options?: PutPreferencesOptions,
+): Promise<PutPreferencesResult> {
+  const fields: Record<string, unknown> = { ...prefs };
+  delete fields.updatedAt;
+  const body: Record<string, unknown> = { ...fields };
+  if (options && options.baseUpdatedAt !== undefined) {
+    body.baseUpdatedAt = options.baseUpdatedAt;
+  }
+  const response = await sendRequest("/api/preferences", {
+    method: "PUT",
+    body,
+    signal: options?.signal,
+  });
+  const header = response.headers.get("X-Preferences-Updated-At");
+  const updatedAt = header?.trim() ? header.trim() : null;
+  if (response.status !== 204) {
+    await readResponse<unknown>(response, "PUT", "/api/preferences");
+  }
+  return { updatedAt };
 }
 
 export function postFeedback(

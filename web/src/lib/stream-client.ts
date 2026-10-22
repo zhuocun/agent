@@ -678,11 +678,11 @@ export interface UseApiStreamResult {
 //   without rebinding `start`/`stop`/`reset` on every render.
 export function useApiStream(
   onTerminal?: (result: TerminalResult) => void,
-  // Called when a send is rejected with HTTP 409 / code "STREAM_IN_PROGRESS"
-  // (a second send while a response is still generating). The hook does NOT
-  // emit an error terminal in that case — so no errored bubble replaces the
-  // live answer — and hands the rejection to the caller to surface a toast and
-  // roll back its optimistic bubble. (P0-2)
+  // Called when a send is rejected with code "STREAM_IN_PROGRESS" (a second
+  // send while a response is still generating). Any other HTTP 409 is an error
+  // terminal. The hook does NOT emit an error terminal for this code — so no
+  // errored bubble replaces the live answer — and hands the rejection to the
+  // caller to surface a toast and roll back its optimistic bubble. (P0-2)
   onStreamInProgress?: () => void,
 ): UseApiStreamResult {
   const [state, setState] = useState<ApiStreamState>(INITIAL);
@@ -1519,16 +1519,15 @@ export function useApiStream(
           // Body wasn't JSON; fall through to the synthesized envelope.
         }
         // Defense-in-depth for a second send landing while a response is still
-        // generating: the BE rejects it with 409 STREAM_IN_PROGRESS. Do NOT
+        // generating: the BE rejects it with code STREAM_IN_PROGRESS. Do NOT
         // turn that into an error terminal — an errored bubble would replace
         // the legitimate in-flight answer. Suppress the terminal (so the live
         // stream's commit path is untouched), drop our just-armed state back to
-        // idle, and let the caller toast + roll back its optimistic bubble. The
-        // P0-1 busy gate makes this near-unreachable from normal flow. (P0-2)
-        if (
-          response.status === 409 ||
-          envelope?.code === "STREAM_IN_PROGRESS"
-        ) {
+        // idle, and let the caller toast + roll back its optimistic bubble. Any
+        // other 409 (for example APPROVAL_DECISION_CONFLICT) is a real failure
+        // and falls through to the error terminal. The P0-1 busy gate makes the
+        // in-progress path near-unreachable from normal flow. (P0-2)
+        if (envelope?.code === "STREAM_IN_PROGRESS") {
           terminalEmittedRef.current = true;
           cancelScheduledFlush();
           setState((s) => ({ ...s, status: "idle" }));

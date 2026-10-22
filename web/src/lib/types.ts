@@ -571,6 +571,9 @@ export interface UserPreferences {
   webSearchDefault: boolean;
   jsonModeDefault: boolean;
   deepResearchDefault: boolean;
+  // Server clock for this saved row, when the API sends one. Edits send it
+  // back as `baseUpdatedAt` so a stale PUT can be detected.
+  updatedAt?: string;
 }
 
 // Stable, persistence-safe identifiers for each rebindable action (D23). These

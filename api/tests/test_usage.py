@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import Conversation, UsageCreditLedger, UsageRollup, User
+from app.db.models import Conversation, Message, UsageCreditLedger, UsageRollup, User
 from app.db.repositories import usage as usage_repo
 
 pytestmark = pytest.mark.asyncio
@@ -378,6 +378,132 @@ async def test_byok_usage_does_not_debit_platform_credits(
 
         assert balance == pytest.approx(2.0)
         assert [entry.entry_type for entry in entries] == ["grant"]
+
+
+async def test_byok_increment_does_not_consume_platform_budget(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """BYOK dollars stay off the platform ledger and the per-conversation gate.
+
+    A later platform-key increment under quota records only that platform cost
+    and does not debit credits. A sibling platform message still counts.
+    """
+    async with session_factory() as session:
+        user = User(is_anonymous=False, name="Eve", email="byok-budget@example.com")
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+        await usage_repo.grant_credits(session, user_id=user.id, amount_usd=2.0)
+        await usage_repo.increment_for_period(
+            session,
+            user_id=user.id,
+            used_delta=1,
+            cost_usd_delta=5,
+            is_byok=True,
+            monthly_quota_usd=1.0,
+        )
+        await session.commit()
+
+        rollup = (
+            await session.execute(select(UsageRollup).where(UsageRollup.user_id == user.id))
+        ).scalar_one()
+        assert rollup.used == 1
+        assert rollup.is_byok is True
+        assert float(rollup.cost_usd) == 0
+        assert await usage_repo.has_platform_allowance(
+            session, user_id=user.id, monthly_quota_usd=1.0
+        )
+        assert await usage_repo.get_period_cost(session, user_id=user.id) == 0
+
+        byok_chat = Conversation(
+            user_id=user.id,
+            title="byok",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        platform_chat = Conversation(
+            user_id=user.id,
+            title="platform",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add_all([byok_chat, platform_chat])
+        await session.flush()
+        session.add(
+            Message(
+                conversation_id=byok_chat.id,
+                role="assistant",
+                parts=[{"type": "text", "text": "byok"}],
+                status="done",
+                attribution={"isByok": True},
+                cost_usd=5,
+            )
+        )
+        session.add(
+            Message(
+                conversation_id=platform_chat.id,
+                role="assistant",
+                parts=[{"type": "text", "text": "platform"}],
+                status="done",
+                attribution={"isByok": False},
+                cost_usd=0.4,
+            )
+        )
+        uncosted_chat = Conversation(
+            user_id=user.id,
+            title="uncosted",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(uncosted_chat)
+        await session.flush()
+        session.add(
+            Message(
+                conversation_id=uncosted_chat.id,
+                role="assistant",
+                parts=[{"type": "text", "text": "no attribution"}],
+                status="done",
+                attribution=None,
+                cost_usd=0.15,
+            )
+        )
+        await session.commit()
+
+        byok_message = (
+            await session.execute(
+                select(Message).where(Message.conversation_id == byok_chat.id)
+            )
+        ).scalar_one()
+        assert float(byok_message.cost_usd or 0) == pytest.approx(5)
+        assert byok_message.attribution is not None
+        assert byok_message.attribution["isByok"] is True
+        assert await usage_repo.get_conversation_cost(session, byok_chat.id) == 0
+        assert await usage_repo.get_conversation_cost(session, platform_chat.id) == pytest.approx(
+            0.4
+        )
+        assert await usage_repo.get_conversation_cost(session, uncosted_chat.id) == pytest.approx(
+            0.15
+        )
+
+        await usage_repo.increment_for_period(
+            session,
+            user_id=user.id,
+            used_delta=1,
+            cost_usd_delta=0.2,
+            is_byok=False,
+            monthly_quota_usd=1.0,
+        )
+        await session.commit()
+
+        assert await usage_repo.get_period_cost(session, user_id=user.id) == pytest.approx(0.2)
+        balance = await usage_repo.get_credit_balance(session, user_id=user.id)
+        assert balance == pytest.approx(2.0)
+        rollup = (
+            await session.execute(select(UsageRollup).where(UsageRollup.user_id == user.id))
+        ).scalar_one()
+        assert rollup.used == 2
+        assert rollup.is_byok is False
 
 
 async def test_concurrent_platform_debits_cannot_overspend_credits(

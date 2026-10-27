@@ -1,7 +1,7 @@
 # CLI dispatch hygiene
 
 Use this reference when running a headless CLI as a subagent. `SKILL.md` assigns
-the source, model family, effort and Fast scope; this file carries that
+the source, model family, effort and speed scope; this file carries that
 assignment into the invocation and checks the result. Apply the common guards
 and the selected source's guidance on every dispatch.
 
@@ -60,10 +60,12 @@ assignment into a different shell unchanged.
   level below it, as **Effort limits** in `SKILL.md` requires. If an ID is
   rejected, select the next-newest listed ID of the same family and tier; never
   let the CLI choose its default.
-- **Fast**: enable it only inside the user's named scope. Explicitly select
-  standard elsewhere, including for an assigned model that has no Fast option on
-  the selected source. Saved settings and defaults can affect headless runs.
-  Keep the assigned family and effort.
+- **Speed**: apply **Speed modes** in `SKILL.md` to select Standard, Fast or
+  Ultrafast from the user's explicit scope and current source support. A Fast
+  control does not establish Ultrafast support. Saved settings and defaults can
+  affect headless runs; explicitly carry the authorized request without changing
+  the assigned model, family, source or effort. If no documented Ultrafast control
+  is verified for a source below, treat Ultrafast as unavailable there.
 - **Reporting**: report each run in the one-line form of **Reporting** in
   `SKILL.md`, from what the invocation carried. Run records and catalog labels
   below help confirm that the run used the intended model, effort and request;
@@ -258,24 +260,32 @@ before relying on a sandbox mode.
   put `-a`/`--ask-for-approval` before `exec`; where sandbox is exec-level only,
   put `--sandbox` before `resume`. Do not require the retired `--full-auto`
   compatibility flag or assume another build accepts it.
-- **Fast selection**: keep the same model ID. Where the installed schema and
+- **Speed selection**: keep the same model ID. Where the installed schema and
   selected provider support these keys, request Fast per run with
-  `-c service_tier=fast -c features.fast_mode=true`; request standard with
-  `-c service_tier=default`. If the supported interface differs, use its verified
-  equivalent; without one, the source has no Fast option for that run. Never use
-  `ultrafast` or `flex` under this policy.
+  `-c service_tier=fast -c features.fast_mode=true`, Ultrafast with
+  `-c service_tier=ultrafast`, and Standard with `-c service_tier=default`.
+  The [speed reference](https://learn.chatgpt.com/docs/agent-configuration/speed)
+  describes Ultrafast availability in Work and Codex; the
+  [API Ultrafast reference](https://developers.openai.com/api/docs/guides/ultrafast-mode)
+  documents `service_tier=ultrafast` for supported models. Neither establishes
+  availability for this account, provider or build. Do not infer an Ultrafast
+  feature flag from `features.fast_mode`, or use the `ultra` effort to select it.
+  If the supported interface differs, use its verified equivalent; without one,
+  apply **Speed modes** in `SKILL.md`. Do not substitute `flex`.
   Check effective settings, profiles, feature gates, managed restrictions and
   the model's advertised tiers; explicitly select the required tier on new and
   resumed runs. Do not rely on interactive `/fast` storage or TUI defaults to
   configure exec. An omitted service tier can inherit Project Fast.
-- **Native Fast dispatch**: use native dispatch only when an explicit request
+- **Native speed dispatch**: use native dispatch only when an explicit request
   setting, host request contract or verified inheritance establishes the role's
   assigned requested tier. Set exposed model and effort parameters and inspect
   fork restrictions. Capability advertising alone is insufficient. Verified
   inheritance that matches the assignment can carry it without a separate
   tier selector. Otherwise use exec with explicit tier settings, and
   independently request standard for an out-of-scope role if native dispatch
-  would select Fast. Verify the current host rather than assuming
+  would select Fast or Ultrafast. A model list advertising Ultrafast and a
+  launcher exposing only model and effort do not establish an Ultrafast request.
+  Verify the current host rather than assuming
   root-tier inheritance or overwrite behavior.
 - **Output and verification**: progress goes to stderr; stdout and
   `-o`/`--output-last-message` contain the final message. `--json` emits JSONL;

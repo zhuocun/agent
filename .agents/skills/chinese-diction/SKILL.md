@@ -20,9 +20,9 @@ Settle five variables first. Infer each from the text and the ask — for a chat
 - **Relationship** — upward / downward / peer / outward to a client or the public. [peer]
 - **Domain** — the field whose settled vocabulary governs. [none assumed]
 
-With those settled, write the way a careful native writer writes in that register: **plainly and precisely, with nothing reaching to impress** — where plain means measured exposition in professional prose, conversational ease in casual prose, controlled imagery in creative prose. Before keeping any phrase, ask whether it is (a) English grammar in disguise, (b) an invented, hard-translated, or needlessly English word, (c) vividness the text's purpose doesn't need, (d) off-register — drifting from the target in either direction, or (e) reaching for more force than the claim warrants. If any, rewrite to the form the register calls for.
+With those settled, write the way a careful native writer writes in that register: **plainly and precisely, with nothing reaching to impress** — where plain means measured exposition in professional prose, conversational ease in casual prose, controlled imagery in creative writing. Before keeping any phrase, ask whether it is (a) English grammar in disguise, (b) an invented, hard-translated, or needlessly English word, (c) vividness the text's purpose doesn't need, (d) off-register — drifting from the target in either direction, or (e) reaching for more force than the claim warrants. If any, rewrite to the form the register calls for.
 
-The one test that resolves most cases: **when two phrasings say the same thing, use the plainer, more measured one.** A figure of speech earns its place by adding *precision* — or, in creative prose, an effect the piece genuinely needs; an absolute word (`只能`/`必须`/`一定`) earns its place only when the claim truly is absolute. If they add mere flavor or force, cut them. Prefer verbs with clear objects over abstract nouns: say what is being identified, compressed, merged, verified, or exposed — `识别改动类型`、`压缩返回内容`、`返回搜索任务清单`、`生成验证核查清单`、`定位受影响文件` over `提升能力`、`优化体验`、`赋能增长`. Plainer means clearer, not shorter — write each word in its complete, natural form, never a clipped shorthand.
+The one test that resolves most cases: **when two phrasings say the same thing, use the plainer, more measured one.** Vividness earns its place by adding *precision* or an effect the text's purpose requires; an absolute word (`只能`/`必须`/`一定`) earns its place only when the claim truly is absolute. If they add mere flavor or force, cut them. Prefer verbs with clear objects over abstract nouns: say what is being identified, compressed, merged, verified, or exposed — `识别改动类型`、`压缩返回内容`、`返回搜索任务清单`、`生成验证核查清单`、`定位受影响文件` over `提升能力`、`优化体验`、`赋能增长`. Plainer means clearer, not shorter — write each word in its complete, natural form, never a clipped shorthand.
 
 ## Fidelity — protected spans
 
@@ -74,27 +74,29 @@ When a Chinese technical text keeps English terms, keep them stable and purposef
 - **Coining / hard-translating:** ✗ 越界旗 → ✓ 越界标记
 - **Needless English:** ✗ hatch 出一个对象 · 非法 transition → ✓ 生成一个对象 · 非法的状态转移
 - **Settled terms:** `幂等` (idempotent), `回滚` (rollback), `死锁` (deadlock) are real, not coinages; `复盘` comes from 围棋 and is now the unglossed word for a review in first-party documentation and industry guidance.
-- **Borrowed metaphors:** `闸口` for a checkpoint, `接缝` for an integration boundary, `魔法整数` for "magic number" → 关口 / 对接处 / 未说明的常量.
+- **Borrowed metaphors:** `闸口` for a checkpoint, `接缝` for an integration boundary, `魔法整数` for "magic number" → 检查点 / 对接处 / 未说明的常量.
 - **Audience:** `爆炸半径` is settled in 混沌工程 and SRE writing and correct there; for a general engineering or business audience write `影响范围`. The same test decides `对赌协议`、`举证责任倒置`、`双盲`.
 
 ### 修辞与措辞分量 — earned vividness
 
 #### Methodology
 
-Reaching for vividness the meaning doesn't need is the most common failure in "clever" drafts. Several sub-forms, one principle: cut any figure that adds only flavor.
+**In communication with the user, do not use metaphor (including simile) or personification.** State the intended meaning directly.
 
-A metaphor borrowed from another field names nothing; state the mechanism and its bound. A literal adverb is not a metaphor: 物理上 = "physically" is literal — keep it.
+**Writing exception:** Requested prose — articles, stories, copy and other artifacts — follows its intended genre and purpose, including prose delivered inline. Use a figure only when it adds precision or an effect the piece needs; cut empty ornament. Surrounding explanations and progress updates remain communication.
 
-The same instinct disposes of drama, violent verbs, and wrong-connotation words. In creative registers the bar moves, not the principle: imagery that produces the intended effect is earned; the empty or reflexive figure — and the wrong-connotation word — fails in every register. Persuasive genres get the same carve-out under the same bound: marketing copy and a pitch may reach for a figure, but it must still name something the reader can check.
+Verbatim source quotations keep their wording; proper names, identifiers and established technical terms keep their referents and domain meanings. Judge the meaning in context, not a word's origin. A literal adverb such as `物理上` ("physically") is not a metaphor.
+
+Cut vividness, drama and violent wording used only for force or flavor, and words with the wrong connotations. In persuasive writing, make claims the reader can check.
 
 #### Examples
 
-- **Personification** — ✗ 会自证、会模拟的活对象 → ✓ 能自我校验和模拟的实体
+- **Communication — personification** — ✗ 会自证、会模拟的活对象 → ✓ 能自我校验和模拟的实体
 - **Branded label** (a plain idea dressed as a coined term) — ✗ 新基座的原语 → ✓ 新系统的基本构件
-- **Noun-as-metaphor** — ✗ 这轮降息是市场的强心针 → ✓ 这轮降息在短期内提振了市场信心
+- **Communication — metaphor** — ✗ 这轮降息是市场的强心针 → ✓ 这轮降息在短期内提振了市场信心
 - **Slogan / hyperbole** — ✗ 回滚到最后一毫秒 → ✓ 操作前均可回滚
 - **Business/strategy slogans** — ✗ 全面提升 AI 编码效率、赋能业务高质量增长 → ✓ 降低组件选择和场景匹配成本、提高上下文完整性、减少影响范围遗漏 *(where the source names these)*
-- **Creative target** (the bar moves, the principle does not) — ✗ 夜色如同一位沉默的巨人，笼罩着整座城市 → ✓ 夜色漫过屋脊，一点点笼罩住整座城市 *(the simile decorates; 漫过 carries the direction and pace, so it earns its place)*
+- **Writing exception — suspense fiction:** ✓ 走廊尽头的灯像一只睁着的眼，盯着我 *(the simile and personification convey the narrator's feeling of being watched)*
 - **Drama, violent verbs, and connotation:** `重生`→`重写后`; `砸`/`杀死`/`焊死`→`投入`/`消除`/`锁定`; `廉价`→`低成本` (cheap carries "shoddy"), `投机性`→`没把握` (投机 means opportunism, not *speculative*), `一刀切`→`彻底分开` (一刀切 is pejorative) when you mean a clean separation.
 - **Persuasive genres:** ✓ 十分钟就能上手，无需通读文档 over ✗ 开启高效协作新体验
 
@@ -115,7 +117,7 @@ For a professional target, cut narrative openers, casual pronoun + 得, telegrap
 - ✓ right: 销售只需用一句话说明诉求 ｜ 需先确定 ｜ 依赖人工计算
 - **casual target:** ✗ 关于周末聚餐一事，请各位于明日前予以回复 → ✓ 咱们周末聚餐，大家明天之前回复一下哈 *(the casual target licenses 咱们, the loose clause order and the final 哈 — it does not license a clipped word: 回复 stays whole.)*
 
-Quoted speech: ✓ 他把报告推了回来，说：“这些数据我不认可。”之后我们重做了口径 · a marked aside: ✓ 本季度营收同比增长 12%（说实话，这个数比我们预想的好），主要来自新客户 · a deliberate collision: ✓ 那年夏天，我和窗外的蝉达成了“战略合作”：它负责叫，我负责睡不着
+Quoted speech: ✓ 他把报告推了回来，说：“这些数据我不认可。”之后我们重做了口径 · a marked aside: ✓ 本季度营收同比增长 12%（说实话，这个数比我们预想的好），主要来自新客户 · a deliberate collision in requested creative writing: ✓ 那年夏天，我和窗外的蝉达成了“战略合作”：它负责叫，我负责睡不着
 
 ### 确定性与义务 — measured claims and warranted force
 
@@ -231,7 +233,7 @@ Use these wherever the prose makes claims a reader will act on — technical, bu
 - [ ] Chinese sentence structure throughout — coordinate pre-modifiers are separated by `、`, and no single pre-modifier stacks three or more of actor, place, time and manner around its verb, no `被…所…`, no connector pile-ups (`由于…因此…并且`), no nominalized `进行…的处理`, no subject drift.
 - [ ] No needless English — every English token left in the text is a bare acronym that this domain's own Chinese writing leaves in English (**既有术语与英文**: software `LLM` `API` `SPA` `CFG` `FSM` `MCP`; medicine `CT` `MRI` `PCR`; finance `IPO` `ETF` `ROE`; the inventory belongs to the settled domain, so read it off that field, not off this list), a term canonical as English in that field (`agent`), a product name or trademark, an author name, a URL, quoted English, or a code identifier; genuine settled terms (`幂等`/`回滚`/`死锁`) are not over-translated into Chinese.
 - [ ] No coinage — every nonstandard term, and every `面`/`态`/`位`/`键` suffix form, passes the substitution test: replaced by a plain description of what it denotes, the text loses no information. A term settled for this audience stays; one settled only inside a narrower field is expanded.
-- [ ] No vividness the text's purpose doesn't need — no personification, branded labels, noun-metaphor, slogans, drama, or wrong-connotation words; in creative and persuasive prose, each figure earns its effect and still names something checkable.
+- [ ] **修辞与措辞分量** distinguishes communication from requested writing, including inline prose: the communication ban holds; writing uses figures only for precision or a needed effect. Source quotations, names, identifiers and domain meanings remain intact. No empty ornament or ill-fitting branded labels or slogans; vividness, drama and violent wording are not used only for force or flavor, connotations fit the intended meaning, and persuasive claims remain checkable.
 - [ ] Register, medium and relationship match what was settled — professional / casual / creative, the medium's own forms, upward / downward / peer / outward — and hold steady, never mixing within the text except where the text quotes a speaker, marks an aside, or stages a deliberate collision in creative prose, each set off as quotation or aside.
 - [ ] No absolute/categorical words reached for by default (`只能`/`必须`/`一定`/`永远`/`一旦…就`) — measured phrasing unless the claim is genuinely absolute, or the settled genre is one that imposes obligation — contract, policy, safety notice, regulatory text — where `应`/`不得`/`严禁` are the correct form; and no over-hedge mush (`可能…也许…或许`) — one qualifier per real uncertainty, placed precisely, not counting distance markers written upward or to a client (`是否方便…`/`我们这边…`), which are politeness rather than hedging.
 - [ ] No clipped/over-shortened words in running prose — each written in its complete natural form (`重复录入` not `重录`, `手动维护` not `手维护`); display slots and casual chat keep their own short forms, and so does a settled industry short form that heads its own sentence on first mention and heads its own compounds (`压测`/`灰度`/`联调`; `压测平台`), but not one that merely trails its long form nearby (`冒烟`, `回归`).

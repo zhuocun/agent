@@ -1143,6 +1143,23 @@ function useListTransitions(conversations: ConversationSummary[]): {
 
   // Build the merged list: live rows (tagged "enter" when genuinely new) with
   // exiting snapshots re-inserted after their anchor id.
+  //
+  // An id that is live again — a failed delete restored the row before the
+  // collapse finished — still has an exit snapshot. The removal loop above
+  // skips that id (it is in currentIds) and does not drop the snapshot.
+  // Emitting it plus the live row mounts two children with the same id.
+  // phaseById then keeps "exit", because the live row's phase is undefined
+  // and does not overwrite, so the restored row stays inert until the
+  // fallback timer. Drop the snapshot and its timer here and do not emit it.
+  for (const id of [...exitingRef.current.keys()]) {
+    if (!currentIds.has(id)) continue;
+    exitingRef.current.delete(id);
+    const timer = exitTimersRef.current.get(id);
+    if (timer != null) {
+      window.clearTimeout(timer);
+      exitTimersRef.current.delete(id);
+    }
+  }
   const rows: DisplayRow[] = [];
   const emitExitingAfter = (anchor: string | null) => {
     for (const entry of exitingRef.current.values()) {

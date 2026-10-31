@@ -1454,11 +1454,13 @@ async def run_single(
                     pending_tool_label = event.label
                 session_usage = fold_usage(event, session_usage)
                 session_cost = cost_for_usage(session_usage)
-                # The hold covers this session's new spend. Restored pause spend
-                # is already billed, so it counts toward the run cap only.
+                # Session spend is pending. Adding it into total_usd and then
+                # subtracting already_billed_usd leaves a float above an equal
+                # hold. The cap still adds pending onto the restored total.
                 if not budget_halted and budget.continuation_exceeds(
-                    total_usd=restored_run_cost + session_cost,
+                    total_usd=restored_run_cost,
                     already_billed_usd=restored_run_cost,
+                    pending_usd=session_cost,
                     cap_usd=cap,
                     hold_usd=budget_headroom_usd,
                 ):

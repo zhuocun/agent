@@ -550,6 +550,94 @@ async def test_single_resume_halts_when_new_spend_exceeds_the_hold() -> None:
 
 
 @pytest.mark.asyncio
+async def test_single_midflight_equal_hold_ignores_sum_float() -> None:
+    """Session spend equal to the hold stays inside it.
+
+    Restored ``0.0006426000000000001`` plus session ``0.0672`` makes
+    ``(total - already_billed)`` equal ``0.06720000000000001``. The summed
+    call is therefore over the hold. The mid-flight call passes the session
+    as ``pending_usd`` and leaves ``total_usd`` at the restored amount. One
+    output token past the hold still trips. The cap still sees both amounts.
+    """
+    restored = 0.0006426000000000001
+    session = 0.0672
+    hold = 0.0672
+    cap = 1.0
+    settings = _oracle_settings(AGENTIC_RUN_BUDGET_USD=cap)
+    one_output = _price(_fast_binding(settings), UsageUpdate(output_tokens=1))
+    session_over = session + one_output
+    assert one_output > 0.0
+    assert session_over > hold
+    assert (restored + session) - restored > hold
+    assert session == hold
+
+    # The call this resume used to make. The float residue is over the hold.
+    assert (
+        budget.continuation_exceeds(
+            total_usd=restored + session,
+            already_billed_usd=restored,
+            cap_usd=cap,
+            hold_usd=hold,
+        )
+        is True
+    )
+    # Arguments ``run_single`` passes after the fix. Equal spend is inside.
+    assert (
+        budget.continuation_exceeds(
+            total_usd=restored,
+            already_billed_usd=restored,
+            pending_usd=session,
+            cap_usd=cap,
+            hold_usd=hold,
+        )
+        is False
+    )
+    assert (
+        budget.continuation_exceeds(
+            total_usd=restored,
+            already_billed_usd=restored,
+            pending_usd=session_over,
+            cap_usd=cap,
+            hold_usd=hold,
+        )
+        is True
+    )
+    # Pending is part of the cap total. The session alone equals the hold.
+    cap_under_sum = 0.05
+    assert restored <= cap_under_sum < restored + session
+    assert (
+        budget.continuation_exceeds(
+            total_usd=restored,
+            already_billed_usd=restored,
+            pending_usd=session,
+            cap_usd=cap_under_sum,
+            hold_usd=hold,
+        )
+        is True
+    )
+
+    calls, events = await _run_single_events(
+        settings=settings,
+        session_usd=session,
+        headroom_usd=hold,
+        prior_run_cost_usd=restored,
+    )
+    assert calls >= 1
+    assert "stay within the run budget" not in _answer_text(events)
+    assert _final_budget_halted(events) is False
+
+    over_calls, over_events = await _run_single_events(
+        settings=settings,
+        session_usd=session_over,
+        headroom_usd=hold,
+        prior_run_cost_usd=restored,
+    )
+    assert over_calls >= 1
+    assert "stay within the run budget" in _answer_text(over_events)
+    assert _final_budget_halted(over_events) is True
+
+
+@pytest.mark.asyncio
 async def test_single_resume_halts_before_provider_when_restored_exceeds_run_cap() -> None:
     """Restored spend above the run cap refuses before the provider stream opens."""
     assert _ONE_PHASE <= _RUN_CAP_BETWEEN < _RESTORED_OVER_CAP

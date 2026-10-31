@@ -1,7 +1,8 @@
 // Confirmed frontend bug hunt. Each test fails on the pre-fix behavior:
 // F1 abandoned first-send create still posts, F2 a superseded preferences PUT
 // can land last, F3 any HTTP 409 is treated as still-generating, F4 a failed
-// delete clears the open transcript, F5 a public share drops attachment names.
+// delete clears the open transcript or leaves two sidebar rows for one id,
+// F5 a public share drops attachment names.
 
 import { expect, test, type Page, type Route } from "./coverage-fixture";
 
@@ -608,6 +609,88 @@ test.describe("bug hunt frontend", () => {
       "beta was open",
     );
     await expect(visibleLink(keepId)).toHaveAttribute("aria-current", "page");
+  });
+
+  test("F4 a fast failed delete does not leave two sidebar rows for one id", async ({
+    page,
+  }) => {
+    // ROW_EXIT_MS (250) plus the 80ms fallback is 330ms. A retry that long lets
+    // the timer drop the exit snapshot, so the row looks healed. These checks
+    // stay inside a shorter window, and the console record does not clear.
+    const beforeCollapseMs = 100;
+    const sameKeyWarnings: string[] = [];
+    page.on("console", (message) => {
+      const text = message.text();
+      if (text.includes("two children with the same key")) {
+        sameKeyWarnings.push(text);
+      }
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+
+    let conversationId = "";
+    page.on("response", (response) => {
+      if (conversationId) return;
+      const match = response
+        .url()
+        .match(/\/api\/conversations\/([^/]+)\/messages$/);
+      if (match && response.request().method() === "POST") {
+        conversationId = match[1] ?? "";
+      }
+    });
+
+    const prompt = "restore this sidebar row";
+    await page.getByTestId("composer-textarea").fill(prompt);
+    await page.getByTestId("composer-send").click();
+    await expect(page.getByTestId("assistant-message").last()).toHaveAttribute(
+      "data-status",
+      "done",
+      { timeout: 15_000 },
+    );
+    await expect.poll(() => conversationId).toBeTruthy();
+
+    await page.route(/\/api\/conversations\/[^/]+$/, async (route) => {
+      if (route.request().method() !== "DELETE") {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "DELETE_FAILED",
+            severity: "error",
+            title: "Couldn't delete conversation",
+            body: "The conversation is still here.",
+          },
+        }),
+      });
+    });
+
+    const link = page
+      .locator(`[data-conversation-id="${conversationId}"]`)
+      .locator('[data-testid="sidebar-conversation-link"]')
+      .locator("visible=true");
+    await expect(link).toHaveAttribute("aria-current", "page");
+    const row = page.locator(`[data-conversation-id="${conversationId}"]`);
+    await row.getByRole("button", { name: "Conversation actions" }).click();
+    await page.getByRole("menuitem", { name: "Delete" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Delete" }).click();
+
+    await expect(
+      page.getByRole("alert", { name: "Error" }),
+    ).toContainText("Couldn't delete conversation");
+    // Round-trip so the duplicate-key console record is in before the asserts.
+    await page.evaluate(() => undefined);
+    expect(sameKeyWarnings).toEqual([]);
+    await expect(link).toBeEnabled({ timeout: beforeCollapseMs });
+    await expect(link).toHaveAttribute("aria-current", "page", {
+      timeout: beforeCollapseMs,
+    });
   });
 
   test("F5 a public share shows an attachment-only user message name", async ({

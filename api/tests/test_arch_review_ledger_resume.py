@@ -1133,13 +1133,15 @@ async def test_ac02_single_resume_ignores_a_conflicting_prior_run_scalar(
 async def test_ac02_a_plan_resume_that_spends_nothing_new_charges_nothing(
     plan_client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The sharpest form of the defect: a resume with no priced phase at all.
+    """A resume that cannot admit charges none of a lying planner scalar.
 
-    `plan_client`'s user spend cap leaves an approved plan with no headroom to
-    spawn workers, so this continuation buys the user nothing. With a $0.37 planner
-    scalar sitting in the row it used to charge $0.37 anyway — the seed was settled
-    over the restored planner phase and the difference became newly billable.
+    The platform balance can cover the residual hold, so admission no longer
+    refuses merely because a full-run estimate is larger than that hold. This
+    continuation is refused by a run cap under the residual instead, and it
+    buys the user nothing. A $0.37 planner scalar in the row used to be settled
+    over the restored planner phase and billed again.
     """
     await plan_client.get("/api/bootstrap")
     user_id = await _entitle_current_user(session_factory)
@@ -1159,6 +1161,10 @@ async def test_ac02_a_plan_resume_that_spends_nothing_new_charges_nothing(
     )
 
     billed_before = await _billed_to_date(session_factory, user_id)
+    # Under the residual, so admit refuses before any worker. The pause above
+    # already happened; only this resume sees the tighter run cap.
+    monkeypatch.setenv("AGENTIC_RUN_BUDGET_USD", "0.01")
+    get_settings.cache_clear()
     with _capturing_run_costs() as folded:
         resumed = await _approve(
             plan_client, conv_id=conv_id, call_id=plan_call_id, nonce="42"

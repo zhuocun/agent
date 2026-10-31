@@ -1237,8 +1237,11 @@ async def run_single(
     """One agent loop wrapped as the `primary` subagent.
 
     Enforces the same per-run cap as deep research (BE-020): pre-admit against a
-    one-primary worst-case estimate, and mid-flight check against the effective
-    cap composed with headroom.
+    one-primary worst-case estimate, and mid-flight stop when the run total
+    exceeds the cap or this continuation's new spend exceeds the hold. The hold
+    covers new spend only. Pause spend already billed counts toward the run cap
+    and does not consume it. A fresh run passes a restored cost of zero, which
+    matches ``exceeds_cap`` composed with the hold.
 
     H-011: primary HITL continuation phase is not implemented. On tool-approval
     resume the handler must pass ``prior_run_cost_usd`` / ``prior_run_usage``
@@ -1337,11 +1340,17 @@ async def run_single(
     restored_run_cost = ledger.cumulative_cost_usd
 
     # FL-12: admission above prices only the FRESH estimate, so a resume whose
-    # seeded ledger is already over the cap used to open another provider stream
-    # and overrun by a whole primary turn. Refuse before `make_stream_for`, and
-    # degrade to a labeled `done` rather than an error (invariant 8).
-    if restored_run_cost > 0.0 and budget.exceeds_cap(
-        actual_usd=restored_run_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
+    # seeded ledger is already over the run cap used to open another provider
+    # stream and overrun by a whole primary turn. Refuse before `make_stream_for`,
+    # and degrade to a labeled `done` rather than an error (invariant 8).
+    # The hold is not part of this comparison: already-billed pause spend does
+    # not consume it. `continuation_exceeds` with equal total and already-billed
+    # amounts halts only when the restored total is over the run cap.
+    if restored_run_cost > 0.0 and budget.continuation_exceeds(
+        total_usd=restored_run_cost,
+        already_billed_usd=restored_run_cost,
+        cap_usd=cap,
+        hold_usd=budget_headroom_usd,
     ):
         yield SubagentStarted(
             subagent_id=subagent_id, label=_PRIMARY_LABEL, role="primary"
@@ -1445,10 +1454,13 @@ async def run_single(
                     pending_tool_label = event.label
                 session_usage = fold_usage(event, session_usage)
                 session_cost = cost_for_usage(session_usage)
-                if not budget_halted and budget.exceeds_cap(
-                    actual_usd=restored_run_cost + session_cost,
+                # The hold covers this session's new spend. Restored pause spend
+                # is already billed, so it counts toward the run cap only.
+                if not budget_halted and budget.continuation_exceeds(
+                    total_usd=restored_run_cost + session_cost,
+                    already_billed_usd=restored_run_cost,
                     cap_usd=cap,
-                    headroom_usd=budget_headroom_usd,
+                    hold_usd=budget_headroom_usd,
                 ):
                     budget_halted = True
                 if isinstance(event, AwaitingApproval):

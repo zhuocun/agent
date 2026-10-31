@@ -7,6 +7,10 @@ These tests use ``Settings(_env_file=None)`` and the fast binding as the oracle:
 - full estimate for one sub-question is 0.2016 (three phases)
 - residual hold, one remaining worker, planner excluded, is 0.1344
 - one primary phase is 0.0672
+
+Single-mode resume prices new session spend against that one-phase hold.
+Pause spend already billed counts toward the run cap and does not consume
+the hold.
 """
 
 from __future__ import annotations
@@ -25,7 +29,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.agentic import budget
 from app.agentic.clarify import ClarificationRecord, clarification_extra_input_tokens
 from app.agentic.continuation import AgenticContinuation
-from app.agentic.orchestrator import _resume_worker_continuation, run_orchestrator
+from app.agentic.orchestrator import (
+    _resume_worker_continuation,
+    run_orchestrator,
+    run_single,
+)
 from app.config import Settings, get_settings
 from app.db.models import Conversation, User
 from app.db.session import get_db
@@ -50,6 +58,11 @@ _ONE_PHASE = 0.0672
 _LEDGER_UNDER_CAP = 0.20
 _NEW_LEG = 0.04
 _PRIOR_FLOOR = 0.50
+_PAUSE_USD = 0.05
+_SESSION_UNDER_HOLD = 0.02
+_SESSION_OVER_HOLD = 0.08
+_RUN_CAP_BETWEEN = 0.08
+_RESTORED_OVER_CAP = 0.10
 
 
 def _oracle_settings(**overrides: object) -> Settings:
@@ -410,6 +423,164 @@ async def test_worker_resume_halts_when_ledger_exceeds_the_run_cap() -> None:
     assert prompts == []
     finals = [event for event in events if isinstance(event, RunCost) and event.budget_halted]
     assert finals
+
+
+def _single_phase_unit(settings: Settings) -> float:
+    return _ONE_PHASE / (
+        settings.agentic_reasoning_token_multiplier
+        * settings.agentic_fanout_token_multiplier
+    )
+
+
+def _is_session_mark(usage: UsageUpdate) -> bool:
+    """The scripted continuation reports its session cost on this usage shape."""
+    return (
+        usage.input_tokens == 0
+        and usage.output_tokens == 1
+        and usage.reasoning_tokens == 0
+        and usage.cached_input_tokens == 0
+    )
+
+
+def _single_cost_for_usage(settings: Settings, session_usd: float):
+    """Admit at exactly one phase, and price the scripted session at ``session_usd``."""
+    unit = _single_phase_unit(settings)
+    phase = budget.priced_phase_cost(unit, phases=1, settings=settings)
+    assert phase == pytest.approx(_ONE_PHASE)
+    assert phase <= _ONE_PHASE
+
+    def cost_for_usage(usage: UsageUpdate) -> float:
+        if _is_session_mark(usage):
+            return session_usd
+        if (
+            usage.input_tokens
+            or usage.output_tokens
+            or usage.reasoning_tokens
+            or usage.cached_input_tokens
+        ):
+            return unit
+        return 0.0
+
+    return cost_for_usage
+
+
+async def _run_single_events(
+    *,
+    settings: Settings,
+    session_usd: float,
+    headroom_usd: float,
+    prior_run_cost_usd: float,
+) -> tuple[int, list[ProviderEvent]]:
+    calls = {"n": 0}
+
+    def _make_stream_for(prompt: str, **_kwargs: object):
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            calls["n"] += 1
+
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="continued")
+                usage = UsageUpdate(output_tokens=1)
+                yield usage
+                yield Complete(usage=usage)
+
+            return _gen()
+
+        return _make
+
+    events = [
+        event
+        async for event in run_single(
+            make_stream_for=_make_stream_for,
+            settings=settings,
+            user_text="continue the paused turn",
+            cost_for_usage=_single_cost_for_usage(settings, session_usd),
+            budget_headroom_usd=headroom_usd,
+            prior_run_cost_usd=prior_run_cost_usd,
+        )
+    ]
+    return calls["n"], events
+
+
+def _final_budget_halted(events: list[ProviderEvent]) -> bool:
+    finals = [event for event in events if isinstance(event, RunCost) and event.phase == "final"]
+    assert finals
+    return finals[-1].budget_halted
+
+
+@pytest.mark.asyncio
+async def test_single_resume_does_not_halt_when_new_spend_fits_the_hold() -> None:
+    """Pause 0.05 and new spend 0.02 sum to 0.07, which is over the 0.0672 hold.
+
+    The hold covers new spend only. 0.02 does not exceed 0.0672, so the
+    continuation must finish without a budget halt.
+    """
+    assert _PAUSE_USD + _SESSION_UNDER_HOLD > _ONE_PHASE
+    assert _SESSION_UNDER_HOLD <= _ONE_PHASE
+    calls, events = await _run_single_events(
+        settings=_oracle_settings(),
+        session_usd=_SESSION_UNDER_HOLD,
+        headroom_usd=_ONE_PHASE,
+        prior_run_cost_usd=_PAUSE_USD,
+    )
+    assert calls >= 1
+    text = _answer_text(events)
+    assert "continued" in text
+    assert "stay within the run budget" not in text
+    assert _final_budget_halted(events) is False
+
+
+@pytest.mark.asyncio
+async def test_single_resume_halts_when_new_spend_exceeds_the_hold() -> None:
+    """New session spend 0.08 exceeds the one-phase hold 0.0672."""
+    assert _SESSION_OVER_HOLD > _ONE_PHASE
+    calls, events = await _run_single_events(
+        settings=_oracle_settings(),
+        session_usd=_SESSION_OVER_HOLD,
+        headroom_usd=_ONE_PHASE,
+        prior_run_cost_usd=_PAUSE_USD,
+    )
+    assert calls >= 1
+    assert "stay within the run budget" in _answer_text(events)
+    assert _final_budget_halted(events) is True
+
+
+@pytest.mark.asyncio
+async def test_single_resume_halts_before_provider_when_restored_exceeds_run_cap() -> None:
+    """Restored spend above the run cap refuses before the provider stream opens."""
+    assert _ONE_PHASE <= _RUN_CAP_BETWEEN < _RESTORED_OVER_CAP
+    calls, events = await _run_single_events(
+        settings=_oracle_settings(AGENTIC_RUN_BUDGET_USD=_RUN_CAP_BETWEEN),
+        session_usd=_SESSION_UNDER_HOLD,
+        headroom_usd=_ONE_PHASE,
+        prior_run_cost_usd=_RESTORED_OVER_CAP,
+    )
+    assert calls == 0
+    text = _answer_text(events)
+    assert "not started" not in text.lower()
+    assert "stay within the run budget" in text
+    assert _final_budget_halted(events) is True
+
+
+@pytest.mark.asyncio
+async def test_fresh_single_run_halts_when_session_cost_exceeds_the_hold() -> None:
+    """A fresh run has no restored cost, so session spend above the hold still halts."""
+    settings = _oracle_settings()
+    assert _SESSION_OVER_HOLD > _ONE_PHASE
+    assert settings.agentic_run_budget_usd > _SESSION_OVER_HOLD
+    calls, events = await _run_single_events(
+        settings=settings,
+        session_usd=_SESSION_OVER_HOLD,
+        headroom_usd=_ONE_PHASE,
+        prior_run_cost_usd=0.0,
+    )
+    assert calls >= 1
+    assert "stay within the run budget" in _answer_text(events)
+    assert _final_budget_halted(events) is True
 
 
 def test_receiptless_stop_bills_this_leg_not_the_run_floor() -> None:

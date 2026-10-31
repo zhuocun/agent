@@ -29,7 +29,7 @@ from app.providers.protocol import UsageUpdate
 from app.providers.tiers import TierBinding
 from app.runtime.run_receipt import RunReceipt
 from app.schemas.message import CostBreakdown
-from app.streaming.turn_reducer import TurnState
+from app.streaming.turn_reducer import ScopeState, TurnState
 
 
 class ResumeMoneySeed(Protocol):
@@ -178,6 +178,36 @@ class TurnMoney:
             already += float(getattr(cont, "paused_worker_cost_usd", 0.0) or 0.0)
         return already
 
+    def _scope_has_tokens(self, usage: UsageUpdate) -> bool:
+        return bool(
+            usage.input_tokens
+            or usage.output_tokens
+            or usage.reasoning_tokens
+            or usage.cached_input_tokens
+        )
+
+    def _price_scope_usage(self, acc: ScopeState) -> float | None:
+        """Price an in-flight scope. ``None`` when it has no tokens yet."""
+        usage = acc.usage
+        if not self._scope_has_tokens(usage):
+            return None
+        if acc.substitution is not None and self.fallback_binding is not None:
+            return self.fallback_cost_for_usage(usage)
+        return self.cost_for_usage(usage)
+
+    def _phase_already_billed_usd(self, phase_id: str) -> float:
+        """Prior receipt cost for this phase, whatever the already-billed flag says.
+
+        A worker pause settles the phase with the flag false. The resume
+        ``SubagentDone`` then adds that partial to this session. Both amounts
+        share the phase id, so the prior cost comes off either way.
+        """
+        seed = self.resume_seed
+        receipt = None if seed is None else seed.prior_receipt
+        if receipt is None:
+            return 0.0
+        return sum(phase.cost_usd for phase in receipt.phases if phase.phase_id == phase_id)
+
     def estimated_agentic_cost_usd(self) -> float:
         """ESTIMATE-ONLY cumulative agentic spend. Never an exact authority.
 
@@ -192,19 +222,31 @@ class TurnMoney:
             if acc.cost_usd is not None:
                 estimated += acc.cost_usd
                 continue
-            has_tokens = bool(
-                acc.usage.input_tokens
-                or acc.usage.output_tokens
-                or acc.usage.reasoning_tokens
-                or acc.usage.cached_input_tokens
-            )
-            if not has_tokens:
-                continue
-            if acc.substitution is not None and self.fallback_binding is not None:
-                estimated += self.fallback_cost_for_usage(acc.usage)
-            else:
-                estimated += self.cost_for_usage(acc.usage)
+            priced = self._price_scope_usage(acc)
+            if priced is not None:
+                estimated += priced
         return estimated
+
+    def _receiptless_newly_billable_usd(self) -> float:
+        """New dollars on a stop that never received a boundary receipt.
+
+        In-flight provider usage (`cost_usd is None`) is this invocation only.
+        A cancel before `SubagentDone` never folds prior spend into that usage,
+        so the run-wide already-billed floor must not be subtracted from it.
+
+        A scope that already has `cost_usd` is that phase's cumulative total
+        (prior plus this session). Subtract every prior receipt cost for that
+        phase id, not the run-wide floor.
+        """
+        total = 0.0
+        for phase_id, acc in self.state.scopes.items():
+            if acc.cost_usd is not None:
+                total += max(0.0, acc.cost_usd - self._phase_already_billed_usd(phase_id))
+                continue
+            priced = self._price_scope_usage(acc)
+            if priced is not None:
+                total += priced
+        return total
 
     def boundary_money(self) -> tuple[CostBreakdown, float, float]:
         """(breakdown, cumulative, newly billable) for a persistable boundary.
@@ -218,11 +260,13 @@ class TurnMoney:
         plan-approved resume. A receipt-less display tick banks nothing, so it
         can never reach this arithmetic.
 
-        Without a receipt the money is explicitly an estimate: orchestrator
-        phase costs are CUMULATIVE across a resume, so the estimate subtracts
-        the floor an earlier pause turn already charged (AR-002). Non-agentic
-        turns price their own accumulated usage and every dollar of it is new —
-        there is no prior leg to have charged.
+        Without a receipt the money is explicitly an estimate. A settled
+        scope's `cost_usd` is that phase's cumulative total, so only that
+        phase's already-billed amount comes off it. In-flight usage is this
+        leg's provider spend and is billed in full. Non-agentic turns price
+        their own accumulated usage and every dollar of it is new — there is
+        no prior leg to have charged. The flat agentic path (no scopes) still
+        subtracts the run floor, because that usage is the whole turn.
         """
         state = self.state
         breakdown = compute_cost_breakdown(
@@ -251,7 +295,7 @@ class TurnMoney:
             return (
                 _with_total(estimated),
                 estimated,
-                max(0.0, estimated - self.already_billed_floor_usd()),
+                self._receiptless_newly_billable_usd(),
             )
         flat = breakdown.subtotal_usd
         return breakdown, flat, max(0.0, flat - self.already_billed_floor_usd())

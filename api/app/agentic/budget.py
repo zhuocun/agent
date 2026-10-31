@@ -26,9 +26,10 @@ slice of that total, not an addend (`pricing.compute_cost_breakdown`).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from app.agentic.clarify import ClarificationRecord, clarification_extra_input_tokens
 from app.config import Settings
 from app.providers.pricing import compute_cost_breakdown
 from app.providers.protocol import UsageUpdate
@@ -81,6 +82,46 @@ def expected_subagent_usage(settings: Settings) -> UsageUpdate:
     )
 
 
+def residual_phase_count(
+    *,
+    remaining_workers: int,
+    settings: Settings,
+    include_planner: bool = False,
+) -> int:
+    """Phases still ahead on a resume: workers + aggregator, plus planner/verifier."""
+    workers = max(0, remaining_workers)
+    count = workers + 1
+    if include_planner:
+        count += 1
+    if settings.agentic_verifier:
+        count += max(1, settings.agentic_verifier_n)
+    return max(1, count)
+
+
+def priced_phase_cost(unit_usd: float, *, phases: int, settings: Settings) -> float:
+    """Scale one subagent's priced usage by phase count and both FR-26g multipliers."""
+    return (
+        unit_usd
+        * phases
+        * settings.agentic_reasoning_token_multiplier
+        * settings.agentic_fanout_token_multiplier
+    )
+
+
+def _unit_subagent_usd(
+    *,
+    binding: TierBinding,
+    settings: Settings,
+    image_count: int,
+) -> float:
+    breakdown = compute_cost_breakdown(
+        usage=expected_subagent_usage(settings),
+        binding=binding,
+        image_count=image_count,
+    )
+    return breakdown.subtotal_usd
+
+
 def estimate_run_cost(
     *,
     sub_question_count: int,
@@ -93,21 +134,31 @@ def estimate_run_cost(
     `Σ subagent estimates x reasoning-multiplier x fan-out-multiplier`, where
     each subagent's estimate is `expected_tokens x tier_price` from
     `pricing.py`. This is the number the plan-approval terminal surfaces as the
-    estimated cost and the number the pre-spawn reservation holds.
+    estimated cost and the number a fresh deep-research reservation holds.
     """
-    per_subagent = expected_subagent_usage(settings)
-    breakdown = compute_cost_breakdown(
-        usage=per_subagent,
-        binding=binding,
-        image_count=image_count,
+    return priced_phase_cost(
+        _unit_subagent_usd(binding=binding, settings=settings, image_count=image_count),
+        phases=_subagent_count(sub_question_count, settings),
+        settings=settings,
     )
-    base = breakdown.subtotal_usd
-    subagents = _subagent_count(sub_question_count, settings)
-    return (
-        base
-        * subagents
-        * settings.agentic_reasoning_token_multiplier
-        * settings.agentic_fanout_token_multiplier
+
+
+def estimate_single_phase_cost(
+    *,
+    binding: TierBinding,
+    settings: Settings,
+    image_count: int = 0,
+) -> float:
+    """Worst-case USD for the one primary phase ``run_single`` admits.
+
+    ``estimate_run_cost(sub_question_count=1)`` prices planner + worker +
+    aggregator. Single mode never runs those phases, so the platform hold has
+    to be this one-phase figure instead.
+    """
+    return priced_phase_cost(
+        _unit_subagent_usd(binding=binding, settings=settings, image_count=image_count),
+        phases=1,
+        settings=settings,
     )
 
 
@@ -125,26 +176,64 @@ def estimate_residual_run_cost(
     samples when enabled — never a full fresh planner+N-workers estimate when
     those phases are already complete.
     """
-    per_subagent = expected_subagent_usage(settings)
+    return priced_phase_cost(
+        _unit_subagent_usd(binding=binding, settings=settings, image_count=image_count),
+        phases=residual_phase_count(
+            remaining_workers=remaining_workers,
+            settings=settings,
+            include_planner=include_planner,
+        ),
+        settings=settings,
+    )
+
+
+def estimate_clarification_uplift(
+    *,
+    records: Sequence[ClarificationRecord] | None,
+    worker_count: int,
+    binding: TierBinding,
+    image_count: int = 0,
+) -> float:
+    """USD added when clarification text is copied onto the remaining phases.
+
+    This is the raw token price, not the FR-26g product. Admission adds the
+    same amount on top of the residual so the hold and the admit check match.
+    """
+    if not records:
+        return 0.0
+    extra = clarification_extra_input_tokens(list(records), worker_count=worker_count)
+    if extra <= 0:
+        return 0.0
     breakdown = compute_cost_breakdown(
-        usage=per_subagent,
+        usage=UsageUpdate(input_tokens=extra),
         binding=binding,
         image_count=image_count,
     )
-    base = breakdown.subtotal_usd
-    workers = max(0, remaining_workers)
-    # Aggregator always remains on deep-research resume; planner only when asked.
-    count = workers + 1
-    if include_planner:
-        count += 1
-    if settings.agentic_verifier:
-        count += max(1, settings.agentic_verifier_n)
-    count = max(1, count)
-    return (
-        base
-        * count
-        * settings.agentic_reasoning_token_multiplier
-        * settings.agentic_fanout_token_multiplier
+    return breakdown.subtotal_usd
+
+
+def estimate_resume_hold(
+    *,
+    remaining_workers: int,
+    binding: TierBinding,
+    settings: Settings,
+    image_count: int = 0,
+    include_planner: bool = False,
+    clarify_records: Sequence[ClarificationRecord] | None = None,
+) -> float:
+    """Residual reservation for a plan or clarify resume, including clarify uplift."""
+    residual = estimate_residual_run_cost(
+        remaining_workers=remaining_workers,
+        binding=binding,
+        settings=settings,
+        image_count=image_count,
+        include_planner=include_planner,
+    )
+    return residual + estimate_clarification_uplift(
+        records=clarify_records,
+        worker_count=max(0, remaining_workers),
+        binding=binding,
+        image_count=image_count,
     )
 
 
@@ -210,6 +299,32 @@ def exceeds_cap(
 ) -> bool:
     """Mid-flight check: has the ACTUAL accumulated cost breached the cap?"""
     return actual_usd > effective_cap(cap_usd=cap_usd, headroom_usd=headroom_usd)
+
+
+def continuation_exceeds(
+    *,
+    total_usd: float,
+    already_billed_usd: float,
+    cap_usd: float,
+    hold_usd: float | None,
+    pending_usd: float = 0.0,
+) -> bool:
+    """Resume gate: the run cap sees the durable total, the hold sees new spend.
+
+    ``hold_usd`` is the residual reserved for this continuation. Pause spend that
+    was already billed counts toward the run cap and does not consume that hold.
+    ``pending_usd`` is estimated spend not yet included in ``total_usd``.
+    A fresh run passes ``already_billed_usd=0``, which matches ``exceeds_cap``
+    composed with ``hold_usd``.
+    """
+    pending = max(0.0, pending_usd)
+    total = total_usd + pending
+    if exceeds_cap(actual_usd=total, cap_usd=cap_usd, headroom_usd=None):
+        return True
+    if hold_usd is None:
+        return False
+    new_spend = max(0.0, total_usd - max(0.0, already_billed_usd)) + pending
+    return new_spend > max(0.0, hold_usd)
 
 
 @dataclass(frozen=True)

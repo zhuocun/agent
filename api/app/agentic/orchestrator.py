@@ -915,10 +915,13 @@ async def _finalize_synthesis_streamed(
                         yield tag_event(event, _AGGREGATOR_ID)
                 elif not verify_after:
                     yield tag_event(event, _AGGREGATOR_ID)
-                if not agg_budget_halted and budget.exceeds_cap(
-                    actual_usd=worker_total_cost + cost_for_usage(aggregator_usage),
+                if not agg_budget_halted and budget.continuation_exceeds(
+                    total_usd=worker_total_cost + cost_for_usage(aggregator_usage),
+                    already_billed_usd=(
+                        0.0 if ledger is None else ledger.already_billed_cost_usd
+                    ),
                     cap_usd=cap_usd,
-                    headroom_usd=budget_headroom_usd,
+                    hold_usd=budget_headroom_usd,
                 ):
                     agg_budget_halted = True
                     break
@@ -1256,10 +1259,10 @@ async def run_single(
     # AC-02: one owner for this run's money for every exit below.
     ledger = CostLedger.restore(prior_receipt)
     expected = budget.expected_subagent_usage(settings)
-    estimate = (
-        cost_for_usage(expected)
-        * settings.agentic_reasoning_token_multiplier
-        * settings.agentic_fanout_token_multiplier
+    # One primary phase. `estimate_single_phase_cost` is the same product the
+    # route reserves for agenticMode=single; this call follows the working pricer.
+    estimate = budget.priced_phase_cost(
+        cost_for_usage(expected), phases=1, settings=settings
     )
     decision = budget.admit_run(
         estimate_usd=estimate, settings=settings, headroom_usd=budget_headroom_usd
@@ -1793,10 +1796,27 @@ async def _resume_worker_continuation(
                 yield event
 
     # H-009: halt without another provider call when the durable ledger is
-    # already exhausted / flagged budget_halted.
-    if budget_halted or budget.exceeds_cap(
-        actual_usd=ledger_usd, cap_usd=cap, headroom_usd=budget_headroom_usd
-    ):
+    # already over the RUN cap, or when this continuation's residual estimate
+    # does not fit the hold the route reserved. Already-billed pause spend is
+    # not compared to that hold — the hold is only for new spend.
+    residual_estimate = budget.priced_phase_cost(
+        cost_for_usage(budget.expected_subagent_usage(settings)),
+        phases=budget.residual_phase_count(
+            remaining_workers=1, settings=settings, include_planner=False
+        ),
+        settings=settings,
+    )
+    # The residual is compared to the hold only. A missing hold means the run
+    # cap is the only pre-call constraint, and that constraint is the durable
+    # ledger — not this estimate. Callers price the estimate with the phase
+    # pricer, which is not always the figure the route reserved.
+    residual_over_hold = budget_headroom_usd is not None and residual_estimate > max(
+        0.0, budget_headroom_usd
+    )
+    ledger_over_cap = budget.exceeds_cap(
+        actual_usd=ledger_usd, cap_usd=cap, headroom_usd=None
+    )
+    if budget_halted or ledger_over_cap or residual_over_hold:
         budget_halted = True
         yield RunCost(
             subtotal_usd=ledger_usd,
@@ -1862,12 +1882,22 @@ async def _resume_worker_continuation(
         sources=source_namespace,
         ledger=ledger,
         # B3: a resume has no sibling fan-out and no consumer to cancel it, so
-        # the cap is enforced on this worker's own stream. The baseline is what
-        # the run had already banked before this continuation.
-        budget_gate=budget.BudgetGate(
-            baseline_usd=ledger_usd,
-            cap_usd=cap,
-            headroom_usd=budget_headroom_usd,
+        # the cap is enforced on this worker's own stream. When headroom is the
+        # residual hold, it constrains THIS continuation's new spend. The
+        # already-billed ledger is not the baseline for that hold; it only
+        # shrinks the run cap still available to the session.
+        budget_gate=(
+            budget.BudgetGate(
+                baseline_usd=ledger_usd,
+                cap_usd=cap,
+                headroom_usd=None,
+            )
+            if budget_headroom_usd is None
+            else budget.BudgetGate(
+                baseline_usd=0.0,
+                cap_usd=max(0.0, cap - ledger_usd),
+                headroom_usd=budget_headroom_usd,
+            )
         ),
         parent=parent,
     )
@@ -2235,11 +2265,41 @@ async def _run_deep_research(
         # plan from a wide one that was cut short.
         workflow.settle_run(workers_planned=len(sub_questions))
     cap = settings.agentic_run_budget_usd
-    estimate = estimate_cost(len(sub_questions)) if estimate_cost is not None else 0.0
+    # A plan or clarify resume reserved `estimate_resume_hold`, not a fresh
+    # planner+workers estimate. Admit that same residual (planner included only
+    # on a clarify resume, where the route counted it) plus the same clarify
+    # uplift. A fresh run still uses the full `estimate_cost` callback.
+    resume_hold = plan_approved is not None or clarify_answered is not None
+    if resume_hold and plan_approved is True:
+        resume_workers = max(1, len(sub_questions))
+        resume_include_planner = False
+    elif resume_hold:
+        resume_workers = settings.agentic_max_workers
+        resume_include_planner = clarify_answered is not None
+    else:
+        resume_workers = len(sub_questions)
+        resume_include_planner = False
+    if resume_hold and estimate_cost is not None:
+        # Replace the handler's full-run callback with the residual the route
+        # reserved. Callers that omit the callback keep the historical zero
+        # estimate; production always wires the callback.
+        estimate = budget.priced_phase_cost(
+            cost_for_usage(budget.expected_subagent_usage(settings)),
+            phases=budget.residual_phase_count(
+                remaining_workers=resume_workers,
+                settings=settings,
+                include_planner=resume_include_planner,
+            ),
+            settings=settings,
+        )
+    else:
+        estimate = estimate_cost(len(sub_questions)) if estimate_cost is not None else 0.0
     # O-014: fold amplified clarification prompt chars into admission so a
     # max-size clarify block cannot understate worst-case spend across phases.
+    # On a resume this is the same worker count the route reserved against.
     extra_clarify_tokens = clarify.clarification_extra_input_tokens(
-        bound_records, worker_count=len(sub_questions)
+        bound_records,
+        worker_count=resume_workers if resume_hold else len(sub_questions),
     )
     if extra_clarify_tokens > 0:
         estimate += cost_for_usage(UsageUpdate(input_tokens=extra_clarify_tokens))
@@ -2381,8 +2441,13 @@ async def _run_deep_research(
     # Seed the run ledger with planner actuals before fan-out (BE-014 / SAF-004).
     async for event in _planner_receipt():
         yield event
-    if budget.exceeds_cap(
-        actual_usd=planner_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
+    # On a resume the planner dollars are already billed. They count toward the
+    # run cap only. New spend is what the residual hold still has to cover.
+    if budget.continuation_exceeds(
+        total_usd=ledger.cumulative_cost_usd,
+        already_billed_usd=ledger.already_billed_cost_usd,
+        cap_usd=cap,
+        hold_usd=budget_headroom_usd,
     ):
         if workflow is not None:
             # The twin of the admit-reject above: the cap is the whole reason this
@@ -2547,8 +2612,11 @@ async def _run_deep_research(
         """
         nonlocal budget_halted, actual_cost, trip_reason
         actual_cost = max(actual_cost, ledger.cumulative_cost_usd)
-        newly_breached = not budget_halted and budget.exceeds_cap(
-            actual_usd=actual_cost, cap_usd=cap, headroom_usd=budget_headroom_usd
+        newly_breached = not budget_halted and budget.continuation_exceeds(
+            total_usd=actual_cost,
+            already_billed_usd=ledger.already_billed_cost_usd,
+            cap_usd=cap,
+            hold_usd=budget_headroom_usd,
         )
         if newly_breached:
             budget_halted = True
@@ -2793,14 +2861,17 @@ async def _run_deep_research(
         cost_for_usage(expected_agg)
         * settings.agentic_reasoning_token_multiplier
     )
-    cannot_fund_aggregator = budget.exceeds_cap(
-        actual_usd=worker_total_cost + aggregator_estimate,
+    cannot_fund_aggregator = budget.continuation_exceeds(
+        total_usd=worker_total_cost,
+        already_billed_usd=ledger.already_billed_cost_usd,
         cap_usd=cap,
-        headroom_usd=budget_headroom_usd,
-    ) or budget.exceeds_cap(
-        actual_usd=worker_total_cost,
+        hold_usd=budget_headroom_usd,
+        pending_usd=aggregator_estimate,
+    ) or budget.continuation_exceeds(
+        total_usd=worker_total_cost,
+        already_billed_usd=ledger.already_billed_cost_usd,
         cap_usd=cap,
-        headroom_usd=budget_headroom_usd,
+        hold_usd=budget_headroom_usd,
     )
     if cannot_fund_aggregator:
         budget_halted = True

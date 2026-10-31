@@ -42,7 +42,9 @@ from app.agentic import (
 from app.agentic.budget import (
     compose_headroom,
     estimate_residual_run_cost,
+    estimate_resume_hold,
     estimate_run_cost,
+    estimate_single_phase_cost,
 )
 from app.agentic.clarify import (
     ClarificationRecord,
@@ -2653,18 +2655,19 @@ async def send_message(
                     if resume_seed.approved_plan
                     else settings.agentic_max_workers
                 )
-                reserve_amount = estimate_residual_run_cost(
+                reserve_amount = estimate_resume_hold(
                     remaining_workers=max(1, plan_n),
                     binding=binding,
                     settings=settings,
                     image_count=image_count,
                     include_planner=False,
+                    clarify_records=resume_seed.clarify_records,
                 )
             elif resume_seed is not None and (
                 resume_seed.is_plan or resume_seed.is_clarify
             ):
                 # Decline / clarify still need remaining orchestration estimate.
-                reserve_amount = estimate_residual_run_cost(
+                reserve_amount = estimate_resume_hold(
                     remaining_workers=(
                         1
                         if effective_agentic_mode != "deep_research"
@@ -2674,14 +2677,20 @@ async def send_message(
                     settings=settings,
                     image_count=image_count,
                     include_planner=resume_seed.is_clarify,
+                    clarify_records=resume_seed.clarify_records,
+                )
+            elif effective_agentic_mode == "single":
+                # run_single admits one primary phase. estimate_run_cost(1)
+                # prices planner + worker + aggregator and rejects a balance
+                # that would have fit the phase that actually runs.
+                reserve_amount = estimate_single_phase_cost(
+                    binding=binding,
+                    settings=settings,
+                    image_count=image_count,
                 )
             else:
                 reserve_amount = estimate_run_cost(
-                    sub_question_count=(
-                        settings.agentic_max_workers
-                        if effective_agentic_mode == "deep_research"
-                        else 1
-                    ),
+                    sub_question_count=settings.agentic_max_workers,
                     binding=binding,
                     settings=settings,
                     image_count=image_count,
@@ -2694,11 +2703,14 @@ async def send_message(
                 monthly_quota_usd=effective_quota_usd,
             )
             if not reserved:
+                # Rollback inside the abandon expires `user`. Read the id first
+                # so the budget error can still be recorded and raised.
+                owner_id = user.id
                 await _abandon_unstarted_stream_claim(db, stream_id)
                 async with derive_session_factory(db)() as event_db:
                     await analytics_repo.record(
                         event_db,
-                        user_id=user.id,
+                        user_id=owner_id,
                         event_type="budget.exceeded",
                         properties={
                             "conversationId": str(conversation_id),

@@ -184,6 +184,20 @@ test.describe("spend analytics dashboard", () => {
       cumulativeCard.getByText("Cumulative meter", { exact: true }),
     ).toBeVisible();
     await expect(
+      cumulativeCard.getByText(
+        "(monthly rollups the window touches, in full)",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(page.getByTestId("spend-analytics-panel")).toContainText(
+      "monthly rollups the selected window touches, including each of those months in full",
+    );
+    await expect(page.getByTestId("spend-analytics-panel")).toContainText(
+      "Regenerated or deleted turns stay in the cumulative meter, and surviving messages are only the replies still in your threads.",
+    );
+    await expect(page.getByText("(month-to-date)")).toHaveCount(0);
+    await expect(page.getByText("this calendar month")).toHaveCount(0);
+    await expect(
       survivingCard.getByText("Surviving messages", { exact: true }),
     ).toBeVisible();
     await expect(page.getByTestId("spend-total-cumulative")).toHaveText("$1.25");
@@ -346,5 +360,70 @@ test.describe("spend analytics dashboard", () => {
     await expect(page.getByTestId("spend-total-cumulative")).toHaveText("—");
     await expect(page.getByTestId("spend-export-csv")).toBeDisabled();
     await expect(page.getByTestId("spend-export-json")).toBeDisabled();
+  });
+
+  test("a range switch hides the previous window, including after a failed fetch", async ({
+    page,
+  }) => {
+    let releaseMismatch: (() => void) | undefined;
+    let mismatch: Promise<void> = Promise.resolve();
+    await mockBootstrap(page);
+    await page.route(`${BE_URL}/api/account/spend**`, async (route) => {
+      const url = new URL(route.request().url());
+      const days = Number(url.searchParams.get("days") ?? "30");
+      if (days !== 30) {
+        await mismatch;
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ error: { code: "INTERNAL", title: "boom" } }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(spendPayload(days)),
+      });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await openSpendPanel(page);
+    const panel = page.getByTestId("spend-analytics-panel");
+    await expect(panel.getByTestId("spend-daily-bars").locator("> div")).toHaveCount(
+      30,
+    );
+    await expect(panel.getByTestId("spend-total-cumulative")).toHaveText("$1.25");
+
+    mismatch = new Promise((resolve) => {
+      releaseMismatch = resolve;
+    });
+    await panel.getByTestId("spend-range-7").click();
+    await expect(panel.getByTestId("spend-range-7")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(panel.getByTestId("spend-daily-bars")).toHaveCount(0);
+    await expect(panel.getByTestId("spend-by-model")).toHaveCount(0);
+    await expect(panel.getByTestId("spend-by-conversation")).toHaveCount(0);
+    await expect(panel.getByTestId("spend-total-cumulative")).toHaveText("—");
+    await expect(panel.getByTestId("spend-total-surviving")).toHaveText("—");
+    await expect(panel.getByText("Loading…")).toBeVisible();
+    await expect(panel.getByText("DeepSeek V4 Pro")).toHaveCount(0);
+
+    releaseMismatch?.();
+    await expect(panel.getByText("Spend data could not be loaded.")).toBeVisible();
+    await expect(panel.getByTestId("spend-range-7")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(panel.getByTestId("spend-daily-bars")).toHaveCount(0);
+    await expect(panel.getByTestId("spend-by-model")).toHaveCount(0);
+    await expect(panel.getByTestId("spend-by-conversation")).toHaveCount(0);
+    await expect(panel.getByTestId("spend-total-cumulative")).toHaveText("—");
+    await expect(panel.getByText("DeepSeek V4 Pro")).toHaveCount(0);
+    await expect(panel.getByText("No spend in this window.")).toHaveCount(0);
+    await expect(panel.getByTestId("spend-export-csv")).toBeDisabled();
   });
 });

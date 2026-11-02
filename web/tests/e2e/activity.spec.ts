@@ -74,4 +74,56 @@ test.describe("activity & data access", () => {
       path: "/opt/cursor/artifacts/activity_dialog.png",
     });
   });
+
+  test("a failed load-more keeps the loaded events and the button", async ({
+    page,
+  }) => {
+    const firstPage = Array.from({ length: 25 }, (_, index) => ({
+      id: `evt-${index}`,
+      eventType: "auth.login",
+      details: {},
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 25 - index)).toISOString(),
+    }));
+    await page.route("**/api/account/activity**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.has("before")) {
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "INTERNAL", title: "boom" },
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(firstPage),
+      });
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await openSettings(page);
+    await page.getByTestId("open-activity-button").click();
+
+    const dialog = page.getByTestId("activity-dialog");
+    const list = dialog.getByTestId("activity-list");
+    await expect(list.getByTestId("activity-event")).toHaveCount(25);
+    await expect(
+      list.getByText("Signed in", { exact: true }).first(),
+    ).toBeVisible();
+
+    const loadMore = dialog.getByTestId("activity-load-more");
+    await expect(loadMore).toBeEnabled();
+    await loadMore.click();
+
+    await expect(
+      dialog.getByText("Couldn't load more activity. Please try again."),
+    ).toBeVisible();
+    await expect(list.getByTestId("activity-event")).toHaveCount(25);
+    await expect(loadMore).toBeEnabled();
+    await expect(loadMore).toHaveText("Load more");
+  });
 });

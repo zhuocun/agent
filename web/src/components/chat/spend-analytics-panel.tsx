@@ -97,9 +97,12 @@ export function SpendAnalyticsPanel({
     return () => controller.abort();
   }, [active, days]);
 
-  const loading = !error && (data === null || data.rangeDays !== days);
-  const maxDaily = data
-    ? data.daily.reduce((acc, day) => Math.max(acc, day.costUsd), 0)
+  // Figures belong to the selected window only. A slower response, or a
+  // failed one, must not keep the previous range on screen.
+  const displayed = data !== null && data.rangeDays === days ? data : null;
+  const loading = displayed === null && error === null;
+  const maxDaily = displayed
+    ? displayed.daily.reduce((acc, day) => Math.max(acc, day.costUsd), 0)
     : 0;
 
   return (
@@ -124,9 +127,9 @@ export function SpendAnalyticsPanel({
         value={[String(days)]}
         onValueChange={(values) => {
           const nextDays = Number(values[0]);
-          if (RANGE_OPTIONS.some((option) => option.days === nextDays)) {
-            setDays(nextDays);
-          }
+          if (!RANGE_OPTIONS.some((option) => option.days === nextDays)) return;
+          if (nextDays !== days) setError(null);
+          setDays(nextDays);
         }}
         aria-label="Spend range"
         className="grid w-full grid-cols-3 gap-0 overflow-hidden rounded-full border border-border/70 bg-secondary/40 p-0.5 [@media(hover:none)]:gap-2"
@@ -162,13 +165,13 @@ export function SpendAnalyticsPanel({
         <div className="glass-clear rounded-2xl px-3.5 py-3">
           <p className="ui-caption text-muted-foreground">
             <span>Cumulative meter</span>
-            <span className="ml-1 ui-caption text-muted-foreground">(month-to-date)</span>
+            <span className="ml-1 ui-caption text-muted-foreground">(monthly rollups the window touches, in full)</span>
           </p>
           <p
             className="mt-0.5 font-mono text-base tabular-nums"
             data-testid="spend-total-cumulative"
           >
-            {data ? formatUsdCurrency(data.cumulativeMeterUsd) : "—"}
+            {displayed ? formatUsdCurrency(displayed.cumulativeMeterUsd) : "—"}
           </p>
         </div>
         <div className="glass-clear rounded-2xl px-3.5 py-3">
@@ -177,16 +180,17 @@ export function SpendAnalyticsPanel({
             className="mt-0.5 font-mono text-base tabular-nums"
             data-testid="spend-total-surviving"
           >
-            {data ? formatUsdCurrency(data.survivingMessagesUsd) : "—"}
+            {displayed
+              ? formatUsdCurrency(displayed.survivingMessagesUsd)
+              : "—"}
           </p>
         </div>
       </div>
       <p className="ui-caption leading-snug text-muted-foreground">
-        The <span className="font-medium">cumulative meter</span> counts every
-        generation you triggered this calendar month — including regenerated or
-        deleted turns.{" "}
-        <span className="font-medium">Surviving messages</span> sums only the
-        replies still in your threads over the selected range, so it can be lower.
+        The <span className="font-medium">cumulative meter</span> sums the
+        monthly rollups the selected window touches, including each of those
+        months in full. Regenerated or deleted turns stay in the cumulative
+        meter, and surviving messages are only the replies still in your threads.
       </p>
 
       <section className="space-y-2">
@@ -196,7 +200,7 @@ export function SpendAnalyticsPanel({
         {/* Table first, chart second: the bars are aria-hidden and carry their
             values only in a title tooltip, so the series needs a real text
             equivalent — the shape the By model list below already has. */}
-        {data && data.daily.length > 0 ? (
+        {displayed && displayed.daily.length > 0 ? (
           <table className="sr-only" data-testid="spend-daily-table">
             <caption>Daily spend</caption>
             <thead>
@@ -207,7 +211,7 @@ export function SpendAnalyticsPanel({
               </tr>
             </thead>
             <tbody>
-              {data.daily.map((day) => (
+              {displayed.daily.map((day) => (
                 <tr key={day.date}>
                   <th scope="row">{formatDayLabel(day.date)}</th>
                   <td>{formatUsdCurrency(day.costUsd)}</td>
@@ -217,13 +221,13 @@ export function SpendAnalyticsPanel({
             </tbody>
           </table>
         ) : null}
-        {data && data.daily.length > 0 ? (
+        {displayed && displayed.daily.length > 0 ? (
           <div
             className="flex h-28 items-end gap-0.5"
             data-testid="spend-daily-bars"
             aria-hidden
           >
-            {data.daily.map((day) => {
+            {displayed.daily.map((day) => {
               const heightPct =
                 maxDaily > 0 ? (day.costUsd / maxDaily) * 100 : 0;
               return (
@@ -242,28 +246,30 @@ export function SpendAnalyticsPanel({
               );
             })}
           </div>
-        ) : (
+        ) : loading ? (
+          <p className="ui-caption text-muted-foreground">Loading…</p>
+        ) : displayed ? (
           <p className="ui-caption text-muted-foreground">
-            {loading ? "Loading…" : "No spend in this window."}
+            No spend in this window.
           </p>
-        )}
-        {data && data.daily.length > 0 ? (
+        ) : null}
+        {displayed && displayed.daily.length > 0 ? (
           <div className="flex justify-between ui-caption text-muted-foreground">
-            <span>{formatDayLabel(data.daily[0]!.date)}</span>
+            <span>{formatDayLabel(displayed.daily[0]!.date)}</span>
             <span>
-              {formatDayLabel(data.daily[data.daily.length - 1]!.date)}
+              {formatDayLabel(displayed.daily[displayed.daily.length - 1]!.date)}
             </span>
           </div>
         ) : null}
       </section>
 
-      {data && data.byModel.length > 0 ? (
+      {displayed && displayed.byModel.length > 0 ? (
         <section className="space-y-1.5">
           <h5 className="ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
             By model
           </h5>
           <ul className="space-y-1" data-testid="spend-by-model">
-            {data.byModel.map((model) => (
+            {displayed.byModel.map((model) => (
               <li
                 key={model.label}
                 className="flex items-center justify-between gap-3 ui-list-row"
@@ -283,13 +289,13 @@ export function SpendAnalyticsPanel({
         </section>
       ) : null}
 
-      {data && data.byConversation.length > 0 ? (
+      {displayed && displayed.byConversation.length > 0 ? (
         <section className="space-y-1.5">
           <h5 className="ui-eyebrow font-semibold tracking-wide text-muted-foreground uppercase">
             Top conversations
           </h5>
           <ul className="space-y-1" data-testid="spend-by-conversation">
-            {data.byConversation.map((convo) => (
+            {displayed.byConversation.map((convo) => (
               <li
                 key={convo.conversationId}
                 className="flex items-center justify-between gap-3 ui-list-row"
@@ -314,13 +320,13 @@ export function SpendAnalyticsPanel({
           type="button"
           variant="secondary"
           size="sm"
-          disabled={!data}
+          disabled={!displayed}
           data-testid="spend-export-csv"
           onClick={() => {
-            if (!data) return;
+            if (!displayed) return;
             downloadBlob(
-              `spend-${data.rangeDays}d.csv`,
-              toCsv(data),
+              `spend-${displayed.rangeDays}d.csv`,
+              toCsv(displayed),
               "text/csv;charset=utf-8",
             );
           }}
@@ -332,13 +338,13 @@ export function SpendAnalyticsPanel({
           type="button"
           variant="secondary"
           size="sm"
-          disabled={!data}
+          disabled={!displayed}
           data-testid="spend-export-json"
           onClick={() => {
-            if (!data) return;
+            if (!displayed) return;
             downloadBlob(
-              `spend-${data.rangeDays}d.json`,
-              JSON.stringify(data, null, 2),
+              `spend-${displayed.rangeDays}d.json`,
+              JSON.stringify(displayed, null, 2),
               "application/json",
             );
           }}

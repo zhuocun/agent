@@ -373,7 +373,9 @@ test.describe("touch tablet", () => {
     const dialog = await openSettings(page);
     const panel = dialog.getByTestId("spend-analytics-panel");
     await expect(panel).toBeVisible();
-    const caption = panel.getByText("(month-to-date)");
+    const caption = panel.getByText(
+      "(monthly rollups the window touches, in full)",
+    );
     await expect(caption).toBeVisible();
     await caption.scrollIntoViewIfNeeded();
     const colors = new Set<string>();

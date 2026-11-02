@@ -132,6 +132,7 @@ from app.schemas.stream_events import SubmittedEvent
 from app.streaming import replay_registry
 from app.streaming.handler import (
     ResumeToolSeed,
+    discard_unfilled_assistant_attempt,
     spawn_detached_producer,
     stream_inline_turn,
 )
@@ -2529,586 +2530,601 @@ async def send_message(
             reserved_hold_usd = float(reserve_amount)
         await db.commit()
 
-    # Context-window compaction (FR-35). Keep the replayed history within the
-    # finalized binding's token budget before the provider call. A no-op for the
-    # common short conversation (`should_compact` returns False); a long one
-    # gets its older prefix replaced by a provider-written summary, falling back
-    # to a pure sliding window if summarization is unavailable. Applied to the
-    # `history` threaded into BOTH the detached-producer and inline stream paths.
-    #
-    # B13: fold summarizer usage into durable usage accounting. Bills even when
-    # the summary text is empty and we fall back to a sliding window.
-    compaction = await context_compaction.compact_history(
-        history,
-        binding,
-        provider=provider,
-        model_id=binding.model_id,
-        api_key=resolved_api_key,
-    )
-    history = compaction.history
-    if (
-        compaction.usage is not None
-        and not is_temp
-        and (
-            compaction.usage.input_tokens
-            or compaction.usage.output_tokens
-            or compaction.usage.reasoning_tokens
-            or compaction.usage.cached_input_tokens
-        )
-    ):
-        compaction_breakdown = compute_cost_breakdown(
-            usage=compaction.usage,
-            binding=binding,
-            image_count=0,
-        )
-        # FL-34-b: `subtotal_usd` is the total; `session_surcharge_usd` only
-        # discloses the part of it attributable to the long-context band.
-        compaction_cost = compaction_breakdown.subtotal_usd
-        if compaction_cost > 0:
-            await usage_repo.increment_for_period(
-                db,
-                user_id=user.id,
-                used_delta=0,
-                cost_usd_delta=compaction_cost,
-                is_byok=resolved_api_key is not None,
-                monthly_quota_usd=effective_quota_usd,
-                reference_type="compaction",
-                reference_id=str(stream_id) if stream_id is not None else None,
-            )
-            await db.commit()
-
-    # Durable stream lifecycle (PRD 04 §5.1). The active row was claimed before
-    # message-history mutation and committed by the accepted branch above. The id
-    # is threaded into `stream_and_persist`, which transitions it to done /
-    # stopped / error and links the assistant `message_id`.
-
-    # `resolved_api_key` was resolved earlier (before the budget gate) so the
-    # cost cap could distinguish platform-key vs BYOK turns; it is threaded
-    # through to the stream call below unchanged.
-
-    # Title autogen must not re-fire when a regen / edit-of-first-turn deletes
-    # the prior assistant(s) and leaves count_assistant_messages at 0. Gate it
-    # explicitly on "this is a fresh send" so the handler can require BOTH
-    # conditions before scheduling the detached autogen task.
-    is_initial = (
-        not body.regenerate
-        and not body.continue_turn
-        and body.edit_message_id is None
-        and body.tool_approval is None
-    )
-
-    # Effective web-search opt-in for this turn. Unsupported provider/config
-    # combinations degrade silently: the turn still answers, just ungrounded.
-    effective_web_search = body.web_search and web_search_available_for_binding(
-        binding,
-        settings=settings,
-    )
-    # Structured-output (JSON mode) opt-in. Build the provider protocol object
-    # from the request (None when absent) and thread it down the identical path
-    # as `web_search`. Every adapter degrades gracefully, so there's no
-    # binding-capability gate here — JSON mode always applies when requested.
-    effective_response_format = (
-        ResponseFormat(
-            type=body.response_format.type,
-            schema=body.response_format.schema_,
-        )
-        if body.response_format is not None
-        else None
-    )
-    if not is_temp:
-        event_props = {
-            "conversationId": str(conversation_id),
-            "requestedTierId": body.tier_id,
-            "servedTierId": binding.tier.id,
-            "providerId": selected_provider_id,
-        }
-        if body.regenerate:
-            await analytics_repo.record(
-                db,
-                user_id=user.id,
-                event_type="message.regenerated",
-                properties=event_props,
-            )
-        if body.continue_turn:
-            await analytics_repo.record(
-                db,
-                user_id=user.id,
-                event_type="message.continued",
-                properties=event_props,
-            )
-        if body.tool_approval is not None:
-            await analytics_repo.record(
-                db,
-                user_id=user.id,
-                event_type=(
-                    "tool.approved"
-                    if body.tool_approval.decision == "approve"
-                    else "tool.denied"
-                ),
-                properties={
-                    **event_props,
-                    "toolCallId": body.tool_approval.tool_call_id,
-                },
-            )
-        if body.edit_message_id is not None:
-            await analytics_repo.record(
-                db,
-                user_id=user.id,
-                event_type="message.edited",
-                properties=event_props,
-            )
-        if effective_web_search:
-            await analytics_repo.record(
-                db,
-                user_id=user.id,
-                event_type="search.used",
-                properties=event_props,
-            )
-        if effective_response_format is not None:
-            await analytics_repo.record(
-                db,
-                user_id=user.id,
-                event_type="structured_output.used",
-                properties={
-                    **event_props,
-                    "outputFormat": effective_response_format.type,
-                },
-            )
-        if provider_attachments:
-            await analytics_repo.record(
-                db,
-                user_id=user.id,
-                event_type="attachments.used",
-                properties={
-                    **event_props,
-                    "attachmentCount": len(provider_attachments),
-                    "imageCount": sum(
-                        1 for attachment in provider_attachments if attachment.media_type == "image"
-                    ),
-                    "pdfCount": sum(
-                        1 for attachment in provider_attachments if attachment.media_type == "pdf"
-                    ),
-                    "textCount": sum(
-                        1 for attachment in provider_attachments if attachment.media_type == "text"
-                    ),
-                },
-            )
-
-    # Transparent long-term memory (D19): load the caller's saved facts to inject
-    # ONLY when memory is opt-in enabled AND the turn is not temporary. Temporary
-    # chats skip persistence (handler.py) and must skip injection too — they are
-    # the user's escape hatch from memory. The handler folds these into the
-    # cache-stable system prefix (`prompt_assembly`) and surfaces the injected
-    # count + fact ids on the attribution. `memory_enabled` (enabled AND
-    # non-temporary) also gates the post-turn auto-extraction.
-    memory_enabled = user_prefs.memory_enabled and not is_temp
-    memory_facts: list[str] = []
-    memory_fact_ids: list[str] = []
-    if memory_enabled:
-        injected = await memory_repo.list_for_injection_with_ids(db, user.id)
-        memory_fact_ids = [fact_id for fact_id, _ in injected]
-        memory_facts = [content for _, content in injected]
-
-    # Agentic mode resolution. `deep_research` reuses the same platform-configured
-    # provider key as normal chat — Pro/BYOK is NOT required. Platform spend stays
-    # gated by `budget_headroom_usd` / usage quotas (applied when
-    # `resolved_api_key is None` below). `_has_platform_pro_access` still gates
-    # Pro tier / auto-route elsewhere; it is intentionally not consulted here.
-    #
-    # H-002 / O-003: a durable worker continuation pins orchestration mode (and
-    # optionally tier/provider). Resume must derive from that checkpoint — never
-    # silently coerce away from an already-settled continuation contract.
-    #
-    # AR-001 / A-3: when agentic is kill-switched, ignore body.agenticMode for
-    # reservation, buffer sizing, and submitted metadata — except we refuse
-    # mid-flight agentic resumes rather than half-running them.
-    effective_agentic_mode = body.agentic_mode
-    agentic_feature_on = settings.agentic_enabled and settings.tools_enabled
-    # FL-28 stamps `orchestration_mode` for single-mode agentic pauses too. Those
-    # carry no worker continuation and are neither plan nor clarify pauses, so
-    # without that arm they slipped past the guard and half-ran as a plain tool
-    # resume — the outcome this guard exists to prevent.
-    if not agentic_feature_on and resume_seed is not None and (
-        resume_seed.agentic_continuation is not None
-        or resume_seed.is_plan
-        or resume_seed.is_clarify
-        or resume_seed.orchestration_mode is not None
-    ):
-        raise AppError(
-            ErrorEnvelope(
-                code="AGENTIC_DISABLED",
-                severity="error",
-                title="Agentic mode is disabled",
-                body=(
-                    "This conversation has a paused agentic run, but agentic "
-                    "mode is currently disabled on the server."
-                ),
-            ),
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
-    if not agentic_feature_on:
-        effective_agentic_mode = None
-    # FL-28: pin the mode for EVERY resumable pause shape, not just the ones
-    # carrying a worker continuation. `_prepare_resume_tool` already rejected a
-    # conflicting explicit `agenticMode` (before settling), so this only applies
-    # the checkpoint's mode; a legacy pause with no stamp keeps the historical
-    # `deep_research` default for continuation-bearing seeds.
-    if agentic_feature_on and resume_seed is not None:
-        if resume_seed.orchestration_mode is not None:
-            effective_agentic_mode = resume_seed.orchestration_mode
-        elif resume_seed.agentic_continuation is not None and (
-            effective_agentic_mode is None
-        ):
-            effective_agentic_mode = "deep_research"
-    if resume_seed is not None and resume_seed.agentic_continuation is not None:
-        # AR-006: the checkpoint pins the route that actually SERVED the paused
-        # turn — handler.py stamps the primary triple (`binding.tier.id` /
-        # `provider_id or binding.provider_id` / `binding.model_id`) or, when the
-        # worker paused on the fallback route, the fallback binding's triple. A
-        # pin is therefore a SERVED-route identity and must NEVER be compared
-        # against a REQUESTED one: an `auto` run pins the router-resolved
-        # concrete tier, and a post-fallback pause pins the fallback provider,
-        # so comparing either to `body.*` rejected exactly the resumes the pin
-        # exists to protect.
-        #
-        # The pin is one COHERENT triple, so it is validated as one. Matching
-        # tier/provider/model against three independent sets (primary plus
-        # fallback) accepted a pin whose fields came from DIFFERENT routes: a
-        # client forcing route B resumed a checkpoint pinned to route A merely
-        # because A had become B's fallback. Which route serves the resume is
-        # decided solely by `paused_worker_used_fallback` (orchestrator
-        # `_primary_make`), so that flag — not set membership — selects the one
-        # expected triple here. A pause flagged as fallback-served with NO
-        # fallback route on this turn validates against the primary, because
-        # `_primary_make` gets `fallback_make_stream_for=None` and runs the
-        # primary stream. The provider guard also accepts
-        # `expected_binding.provider_id` as a second name for that SAME binding
-        # — a checkpoint naming the binding's canonical provider rather than the
-        # selected backend id (the `fake` backend serves the canonical DeepSeek
-        # binding) still validates. handler.py stamps the selected backend id,
-        # which is never empty, so today this alias is defensive width rather
-        # than a reachable accept; either way it stays within one route.
-        #
-        # For an `auto` resume the served binding is bound FROM the pin (see the
-        # auto-routing block above), because re-running the router is not stable
-        # across a pause; the tier guard is then a genuine mismatch check for a
-        # client forcing a concrete tier.
-        pin = resume_seed.agentic_continuation
-        if getattr(pin, "paused_worker_used_fallback", False) and (
-            fallback_binding is not None
-        ):
-            expected_binding = fallback_binding
-            expected_provider_id = fallback_provider_id or fallback_binding.provider_id
-        else:
-            expected_binding = binding
-            expected_provider_id = selected_provider_id or binding.provider_id
-        expected_provider_ids = {expected_provider_id, expected_binding.provider_id}
-        pinned_tier = getattr(pin, "tier_id", None)
-        if (
-            isinstance(pinned_tier, str)
-            and pinned_tier
-            and pinned_tier != expected_binding.tier.id
-        ):
-            raise _invalid_input(
-                "INVALID_INPUT",
-                "Resume tierId does not match the paused run checkpoint.",
-            )
-        pinned_provider = getattr(pin, "provider_id", None)
-        if (
-            isinstance(pinned_provider, str)
-            and pinned_provider
-            and pinned_provider not in expected_provider_ids
-        ):
-            raise _invalid_input(
-                "INVALID_INPUT",
-                "Resume providerId does not match the paused run checkpoint.",
-            )
-        pinned_model = getattr(pin, "model_id", None)
-        if (
-            isinstance(pinned_model, str)
-            and pinned_model
-            and pinned_model != expected_binding.model_id
-        ):
-            raise _invalid_input(
-                "INVALID_INPUT",
-                "Resume model does not match the paused run checkpoint.",
-            )
-    # Reserved for future coerce disclosure on `submitted` (FE-013). Deep Research
-    # no longer coerces for entitlement; kept so stream_and_persist call sites
-    # stay stable.
-    agentic_coercion_reason: Literal["entitlement"] | None = None
-
-    # Per-run budget headroom (M3, T5 / BE-019). Compose the caller's REMAINING
-    # platform allowance with any per-conversation remaining so a deep-research
-    # (or agentic single) run can never overshoot either cap. Only platform-key
-    # turns are constrained (BYOK → None = "cap only"). Numeric 0.0 means no
-    # money remains (SAF-003); None means unconstrained.
-    #
-    # B9: before snapshotting headroom, atomically reserve a worst-case estimate
-    # against platform remaining so concurrent conversations cannot jointly
-    # overshoot. Released by the handler (or reaper) on terminal/pause/error.
-    # The orchestrator's platform headroom is THIS stream's allocated hold (not
-    # global remaining after subtracting that hold). Prior billed pause spend
-    # is compared separately via ResumeToolSeed prior_* ledger seeds (B4/B5).
-    if effective_agentic_mode is not None and resolved_api_key is None:
-        if (
-            reserved_hold_usd is None
-            and effective_quota_usd > 0
-            and stream_id is not None
-            and not is_temp
-        ):
-            image_count = sum(
-                1
-                for attachment in provider_attachments
-                if attachment.media_type == "image"
-            )
-            # AR-007: resume reserves remaining phases only — not a full fresh run.
-            if resume_seed is not None and resume_seed.agentic_continuation is not None:
-                reserve_amount = estimate_residual_run_cost(
-                    remaining_workers=1,
-                    binding=binding,
-                    settings=settings,
-                    image_count=image_count,
-                    include_planner=False,
-                )
-            elif (
-                resume_seed is not None
-                and resume_seed.is_plan
-                and resume_seed.decision == "approve"
-            ):
-                plan_n = (
-                    len(resume_seed.approved_plan)
-                    if resume_seed.approved_plan
-                    else settings.agentic_max_workers
-                )
-                reserve_amount = estimate_resume_hold(
-                    remaining_workers=max(1, plan_n),
-                    binding=binding,
-                    settings=settings,
-                    image_count=image_count,
-                    include_planner=False,
-                    clarify_records=resume_seed.clarify_records,
-                )
-            elif resume_seed is not None and (
-                resume_seed.is_plan or resume_seed.is_clarify
-            ):
-                # Decline / clarify still need remaining orchestration estimate.
-                reserve_amount = estimate_resume_hold(
-                    remaining_workers=(
-                        1
-                        if effective_agentic_mode != "deep_research"
-                        else settings.agentic_max_workers
-                    ),
-                    binding=binding,
-                    settings=settings,
-                    image_count=image_count,
-                    include_planner=resume_seed.is_clarify,
-                    clarify_records=resume_seed.clarify_records,
-                )
-            elif effective_agentic_mode == "single":
-                # run_single admits one primary phase. estimate_run_cost(1)
-                # prices planner + worker + aggregator and rejects a balance
-                # that would have fit the phase that actually runs.
-                reserve_amount = estimate_single_phase_cost(
-                    binding=binding,
-                    settings=settings,
-                    image_count=image_count,
-                )
-            else:
-                reserve_amount = estimate_run_cost(
-                    sub_question_count=settings.agentic_max_workers,
-                    binding=binding,
-                    settings=settings,
-                    image_count=image_count,
-                )
-            reserved = await usage_repo.reserve_platform_budget(
-                db,
-                user_id=user.id,
-                stream_id=stream_id,
-                amount_usd=reserve_amount,
-                monthly_quota_usd=effective_quota_usd,
-            )
-            if not reserved:
-                # Rollback inside the abandon expires `user`. Read the id first
-                # so the budget error can still be recorded and raised.
-                owner_id = user.id
-                await _refuse_unreserved_platform_hold(
-                    db,
-                    stream_id=stream_id,
-                    user_id=owner_id,
-                    conversation_id=conversation_id,
-                    tier_id=body.tier_id,
-                    provider_id=selected_provider_id,
-                )
-            await db.commit()
-            reserved_hold_usd = float(reserve_amount)
-        try:
-            headroom_parts: list[float | None] = []
-            if reserved_hold_usd is not None:
-                # This stream's allocated hold — do NOT re-query remaining (that
-                # would subtract the hold and cause premature reject).
-                headroom_parts.append(reserved_hold_usd)
-            elif effective_quota_usd > 0:
-                headroom_parts.append(
-                    await usage_repo.get_platform_remaining_usd(
-                        db,
-                        user_id=user.id,
-                        monthly_quota_usd=effective_quota_usd,
-                    )
-                )
-            if (
-                conversation_project is not None
-                and conversation_project.per_conversation_budget_usd is not None
-            ):
-                conv_cap = conversation_project.per_conversation_budget_usd
-            else:
-                conv_cap = user_prefs.per_conversation_budget_usd or 0.0
-            if conv_cap > 0 and not is_temp:
-                conv_spent = await usage_repo.get_conversation_cost(db, conversation_id)
-                headroom_parts.append(max(0.0, conv_cap - conv_spent))
-            if headroom_parts:
-                budget_headroom_usd = compose_headroom(*headroom_parts)
-        except Exception:
-            # B9: post-reservation pre-producer failure must release the hold.
-            if reserved_hold_usd is not None and stream_id is not None:
-                await _abandon_unstarted_stream_claim(db, stream_id)
-            raise
-
-    # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
-    # provider pump as a DETACHED producer that survives this connection and
-    # appends every wire event to an in-process ReplayBuffer; this POST then
-    # SUBSCRIBES and tails the buffer. A client disconnect stops the tailing but
-    # NOT the producer (the semantics inversion). Reconnects re-subscribe via
-    # `GET .../stream/{stream_id}`. Temporary chats (no `stream_id`, nothing
-    # persisted, nothing to reconnect to) always take the legacy inline path,
-    # even with the flag on.
-    # B9: guard producer startup so a failure cannot strand the reservation.
     try:
-        if settings.resumable_streams_enabled and not is_temp and stream_id is not None:
-            ttl = settings.resumable_buffer_ttl_seconds
-            buffer_max_events: int | None = None
-            buffer_max_bytes: int | None = None
-            if effective_agentic_mode is not None:
-                multiplier = settings.agentic_resumable_buffer_multiplier
-                buffer_max_events = settings.resumable_buffer_max_events * multiplier
-                buffer_max_bytes = settings.resumable_buffer_max_bytes * multiplier
-            buffer = await replay_registry.create_async(
-                stream_id,
-                ttl_seconds=ttl,
-                max_events=buffer_max_events,
-                max_bytes=buffer_max_bytes,
+        # Context-window compaction (FR-35). Keep the replayed history within the
+        # finalized binding's token budget before the provider call. A no-op for the
+        # common short conversation (`should_compact` returns False); a long one
+        # gets its older prefix replaced by a provider-written summary, falling back
+        # to a pure sliding window if summarization is unavailable. Applied to the
+        # `history` threaded into BOTH the detached-producer and inline stream paths.
+        #
+        # B13: fold summarizer usage into durable usage accounting. Bills even when
+        # the summary text is empty and we fall back to a sliding window.
+        compaction = await context_compaction.compact_history(
+            history,
+            binding,
+            provider=provider,
+            model_id=binding.model_id,
+            api_key=resolved_api_key,
+        )
+        history = compaction.history
+        if (
+            compaction.usage is not None
+            and not is_temp
+            and (
+                compaction.usage.input_tokens
+                or compaction.usage.output_tokens
+                or compaction.usage.reasoning_tokens
+                or compaction.usage.cached_input_tokens
             )
-            # The detached producer owns a FRESH session derived from THIS request's
-            # engine (the request session closes when the POST returns). Using
-            # `RuntimeContext.from_session(db)` keeps tests bound to the per-test SQLite
-            # file rather than the process-wide env DATABASE_URL factory.
-            spawn_detached_producer(
-                buffer=buffer,
-                session_factory=RuntimeContext.from_session(db).session_factory,
-                provider=provider,
+        ):
+            compaction_breakdown = compute_cost_breakdown(
+                usage=compaction.usage,
                 binding=binding,
-                requested_tier_id=body.tier_id,
-                conversation_id=conversation_id,
-                user_message_id=user_message_id,
-                user_text=provider_user_text,
-                history=history,
-                is_temporary=is_temp,
-                is_initial=is_initial,
-                user_id=user.id,
-                api_key=resolved_api_key,
-                provider_id=selected_provider_id,
-                stream_id=stream_id,
-                router_substitution=router_substitution,
-                web_search=effective_web_search,
-                response_format=effective_response_format,
-                attachments=provider_attachments,
-                custom_instructions=effective_instructions,
-                memory_facts=memory_facts,
-                memory_fact_ids=memory_fact_ids,
-                memory_enabled=memory_enabled,
-                reasoning_effort_override=reasoning_effort_override,
-                thinking_override=thinking_override,
-                monthly_quota_usd_override=effective_quota_usd,
-                fallback_binding=fallback_binding,
-                fallback_provider_id=fallback_provider_id,
-                fallback_api_key=fallback_api_key,
-                fallback_substitution="provider_fallback",
-                tool_approval=body.tool_approval,
-                resume_seed=resume_seed,
-                agentic_mode=effective_agentic_mode,
-                budget_headroom_usd=budget_headroom_usd,
-                requested_agentic_mode=body.agentic_mode,
-                agentic_coercion_reason=agentic_coercion_reason,
-                precreated_assistant_id=precreated_assistant_id,
+                image_count=0,
             )
+            # FL-34-b: `subtotal_usd` is the total; `session_surcharge_usd` only
+            # discloses the part of it attributable to the long-context band.
+            compaction_cost = compaction_breakdown.subtotal_usd
+            if compaction_cost > 0:
+                await usage_repo.increment_for_period(
+                    db,
+                    user_id=user.id,
+                    used_delta=0,
+                    cost_usd_delta=compaction_cost,
+                    is_byok=resolved_api_key is not None,
+                    monthly_quota_usd=effective_quota_usd,
+                    reference_type="compaction",
+                    reference_id=str(stream_id) if stream_id is not None else None,
+                )
+                await db.commit()
 
-            async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
-                # Subscribe at offset 0 and tail. On client disconnect we simply
-                # stop iterating (the generator is GC'd / aclosed) — the producer
-                # keeps running and persisting. Subscribers NEVER persist.
-                async for sse_event in _replay_buffer_events(
-                    request=request,
+        # Durable stream lifecycle (PRD 04 §5.1). The active row was claimed before
+        # message-history mutation and committed by the accepted branch above. The id
+        # is threaded into `stream_and_persist`, which transitions it to done /
+        # stopped / error and links the assistant `message_id`.
+
+        # `resolved_api_key` was resolved earlier (before the budget gate) so the
+        # cost cap could distinguish platform-key vs BYOK turns; it is threaded
+        # through to the stream call below unchanged.
+
+        # Title autogen must not re-fire when a regen / edit-of-first-turn deletes
+        # the prior assistant(s) and leaves count_assistant_messages at 0. Gate it
+        # explicitly on "this is a fresh send" so the handler can require BOTH
+        # conditions before scheduling the detached autogen task.
+        is_initial = (
+            not body.regenerate
+            and not body.continue_turn
+            and body.edit_message_id is None
+            and body.tool_approval is None
+        )
+
+        # Effective web-search opt-in for this turn. Unsupported provider/config
+        # combinations degrade silently: the turn still answers, just ungrounded.
+        effective_web_search = body.web_search and web_search_available_for_binding(
+            binding,
+            settings=settings,
+        )
+        # Structured-output (JSON mode) opt-in. Build the provider protocol object
+        # from the request (None when absent) and thread it down the identical path
+        # as `web_search`. Every adapter degrades gracefully, so there's no
+        # binding-capability gate here — JSON mode always applies when requested.
+        effective_response_format = (
+            ResponseFormat(
+                type=body.response_format.type,
+                schema=body.response_format.schema_,
+            )
+            if body.response_format is not None
+            else None
+        )
+        if not is_temp:
+            event_props = {
+                "conversationId": str(conversation_id),
+                "requestedTierId": body.tier_id,
+                "servedTierId": binding.tier.id,
+                "providerId": selected_provider_id,
+            }
+            if body.regenerate:
+                await analytics_repo.record(
+                    db,
+                    user_id=user.id,
+                    event_type="message.regenerated",
+                    properties=event_props,
+                )
+            if body.continue_turn:
+                await analytics_repo.record(
+                    db,
+                    user_id=user.id,
+                    event_type="message.continued",
+                    properties=event_props,
+                )
+            if body.tool_approval is not None:
+                await analytics_repo.record(
+                    db,
+                    user_id=user.id,
+                    event_type=(
+                        "tool.approved"
+                        if body.tool_approval.decision == "approve"
+                        else "tool.denied"
+                    ),
+                    properties={
+                        **event_props,
+                        "toolCallId": body.tool_approval.tool_call_id,
+                    },
+                )
+            if body.edit_message_id is not None:
+                await analytics_repo.record(
+                    db,
+                    user_id=user.id,
+                    event_type="message.edited",
+                    properties=event_props,
+                )
+            if effective_web_search:
+                await analytics_repo.record(
+                    db,
+                    user_id=user.id,
+                    event_type="search.used",
+                    properties=event_props,
+                )
+            if effective_response_format is not None:
+                await analytics_repo.record(
+                    db,
+                    user_id=user.id,
+                    event_type="structured_output.used",
+                    properties={
+                        **event_props,
+                        "outputFormat": effective_response_format.type,
+                    },
+                )
+            if provider_attachments:
+                await analytics_repo.record(
+                    db,
+                    user_id=user.id,
+                    event_type="attachments.used",
+                    properties={
+                        **event_props,
+                        "attachmentCount": len(provider_attachments),
+                        "imageCount": sum(
+                            1
+                            for attachment in provider_attachments
+                            if attachment.media_type == "image"
+                        ),
+                        "pdfCount": sum(
+                            1
+                            for attachment in provider_attachments
+                            if attachment.media_type == "pdf"
+                        ),
+                        "textCount": sum(
+                            1
+                            for attachment in provider_attachments
+                            if attachment.media_type == "text"
+                        ),
+                    },
+                )
+
+        # Transparent long-term memory (D19): load the caller's saved facts to inject
+        # ONLY when memory is opt-in enabled AND the turn is not temporary. Temporary
+        # chats skip persistence (handler.py) and must skip injection too — they are
+        # the user's escape hatch from memory. The handler folds these into the
+        # cache-stable system prefix (`prompt_assembly`) and surfaces the injected
+        # count + fact ids on the attribution. `memory_enabled` (enabled AND
+        # non-temporary) also gates the post-turn auto-extraction.
+        memory_enabled = user_prefs.memory_enabled and not is_temp
+        memory_facts: list[str] = []
+        memory_fact_ids: list[str] = []
+        if memory_enabled:
+            injected = await memory_repo.list_for_injection_with_ids(db, user.id)
+            memory_fact_ids = [fact_id for fact_id, _ in injected]
+            memory_facts = [content for _, content in injected]
+
+        # Agentic mode resolution. `deep_research` reuses the same platform-configured
+        # provider key as normal chat — Pro/BYOK is NOT required. Platform spend stays
+        # gated by `budget_headroom_usd` / usage quotas (applied when
+        # `resolved_api_key is None` below). `_has_platform_pro_access` still gates
+        # Pro tier / auto-route elsewhere; it is intentionally not consulted here.
+        #
+        # H-002 / O-003: a durable worker continuation pins orchestration mode (and
+        # optionally tier/provider). Resume must derive from that checkpoint — never
+        # silently coerce away from an already-settled continuation contract.
+        #
+        # AR-001 / A-3: when agentic is kill-switched, ignore body.agenticMode for
+        # reservation, buffer sizing, and submitted metadata — except we refuse
+        # mid-flight agentic resumes rather than half-running them.
+        effective_agentic_mode = body.agentic_mode
+        agentic_feature_on = settings.agentic_enabled and settings.tools_enabled
+        # FL-28 stamps `orchestration_mode` for single-mode agentic pauses too. Those
+        # carry no worker continuation and are neither plan nor clarify pauses, so
+        # without that arm they slipped past the guard and half-ran as a plain tool
+        # resume — the outcome this guard exists to prevent.
+        if not agentic_feature_on and resume_seed is not None and (
+            resume_seed.agentic_continuation is not None
+            or resume_seed.is_plan
+            or resume_seed.is_clarify
+            or resume_seed.orchestration_mode is not None
+        ):
+            raise AppError(
+                ErrorEnvelope(
+                    code="AGENTIC_DISABLED",
+                    severity="error",
+                    title="Agentic mode is disabled",
+                    body=(
+                        "This conversation has a paused agentic run, but agentic "
+                        "mode is currently disabled on the server."
+                    ),
+                ),
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        if not agentic_feature_on:
+            effective_agentic_mode = None
+        # FL-28: pin the mode for EVERY resumable pause shape, not just the ones
+        # carrying a worker continuation. `_prepare_resume_tool` already rejected a
+        # conflicting explicit `agenticMode` (before settling), so this only applies
+        # the checkpoint's mode; a legacy pause with no stamp keeps the historical
+        # `deep_research` default for continuation-bearing seeds.
+        if agentic_feature_on and resume_seed is not None:
+            if resume_seed.orchestration_mode is not None:
+                effective_agentic_mode = resume_seed.orchestration_mode
+            elif resume_seed.agentic_continuation is not None and (
+                effective_agentic_mode is None
+            ):
+                effective_agentic_mode = "deep_research"
+        if resume_seed is not None and resume_seed.agentic_continuation is not None:
+            # AR-006: the checkpoint pins the route that actually SERVED the paused
+            # turn — handler.py stamps the primary triple (`binding.tier.id` /
+            # `provider_id or binding.provider_id` / `binding.model_id`) or, when the
+            # worker paused on the fallback route, the fallback binding's triple. A
+            # pin is therefore a SERVED-route identity and must NEVER be compared
+            # against a REQUESTED one: an `auto` run pins the router-resolved
+            # concrete tier, and a post-fallback pause pins the fallback provider,
+            # so comparing either to `body.*` rejected exactly the resumes the pin
+            # exists to protect.
+            #
+            # The pin is one COHERENT triple, so it is validated as one. Matching
+            # tier/provider/model against three independent sets (primary plus
+            # fallback) accepted a pin whose fields came from DIFFERENT routes: a
+            # client forcing route B resumed a checkpoint pinned to route A merely
+            # because A had become B's fallback. Which route serves the resume is
+            # decided solely by `paused_worker_used_fallback` (orchestrator
+            # `_primary_make`), so that flag — not set membership — selects the one
+            # expected triple here. A pause flagged as fallback-served with NO
+            # fallback route on this turn validates against the primary, because
+            # `_primary_make` gets `fallback_make_stream_for=None` and runs the
+            # primary stream. The provider guard also accepts
+            # `expected_binding.provider_id` as a second name for that SAME binding
+            # — a checkpoint naming the binding's canonical provider rather than the
+            # selected backend id (the `fake` backend serves the canonical DeepSeek
+            # binding) still validates. handler.py stamps the selected backend id,
+            # which is never empty, so today this alias is defensive width rather
+            # than a reachable accept; either way it stays within one route.
+            #
+            # For an `auto` resume the served binding is bound FROM the pin (see the
+            # auto-routing block above), because re-running the router is not stable
+            # across a pause; the tier guard is then a genuine mismatch check for a
+            # client forcing a concrete tier.
+            pin = resume_seed.agentic_continuation
+            if getattr(pin, "paused_worker_used_fallback", False) and (
+                fallback_binding is not None
+            ):
+                expected_binding = fallback_binding
+                expected_provider_id = fallback_provider_id or fallback_binding.provider_id
+            else:
+                expected_binding = binding
+                expected_provider_id = selected_provider_id or binding.provider_id
+            expected_provider_ids = {expected_provider_id, expected_binding.provider_id}
+            pinned_tier = getattr(pin, "tier_id", None)
+            if (
+                isinstance(pinned_tier, str)
+                and pinned_tier
+                and pinned_tier != expected_binding.tier.id
+            ):
+                raise _invalid_input(
+                    "INVALID_INPUT",
+                    "Resume tierId does not match the paused run checkpoint.",
+                )
+            pinned_provider = getattr(pin, "provider_id", None)
+            if (
+                isinstance(pinned_provider, str)
+                and pinned_provider
+                and pinned_provider not in expected_provider_ids
+            ):
+                raise _invalid_input(
+                    "INVALID_INPUT",
+                    "Resume providerId does not match the paused run checkpoint.",
+                )
+            pinned_model = getattr(pin, "model_id", None)
+            if (
+                isinstance(pinned_model, str)
+                and pinned_model
+                and pinned_model != expected_binding.model_id
+            ):
+                raise _invalid_input(
+                    "INVALID_INPUT",
+                    "Resume model does not match the paused run checkpoint.",
+                )
+        # Reserved for future coerce disclosure on `submitted` (FE-013). Deep Research
+        # no longer coerces for entitlement; kept so stream_and_persist call sites
+        # stay stable.
+        agentic_coercion_reason: Literal["entitlement"] | None = None
+
+        # Per-run budget headroom (M3, T5 / BE-019). Compose the caller's REMAINING
+        # platform allowance with any per-conversation remaining so a deep-research
+        # (or agentic single) run can never overshoot either cap. Only platform-key
+        # turns are constrained (BYOK → None = "cap only"). Numeric 0.0 means no
+        # money remains (SAF-003); None means unconstrained.
+        #
+        # B9: before snapshotting headroom, atomically reserve a worst-case estimate
+        # against platform remaining so concurrent conversations cannot jointly
+        # overshoot. Released by the handler (or reaper) on terminal/pause/error.
+        # The orchestrator's platform headroom is THIS stream's allocated hold (not
+        # global remaining after subtracting that hold). Prior billed pause spend
+        # is compared separately via ResumeToolSeed prior_* ledger seeds (B4/B5).
+        if effective_agentic_mode is not None and resolved_api_key is None:
+            if (
+                reserved_hold_usd is None
+                and effective_quota_usd > 0
+                and stream_id is not None
+                and not is_temp
+            ):
+                image_count = sum(
+                    1
+                    for attachment in provider_attachments
+                    if attachment.media_type == "image"
+                )
+                # AR-007: resume reserves remaining phases only — not a full fresh run.
+                if resume_seed is not None and resume_seed.agentic_continuation is not None:
+                    reserve_amount = estimate_residual_run_cost(
+                        remaining_workers=1,
+                        binding=binding,
+                        settings=settings,
+                        image_count=image_count,
+                        include_planner=False,
+                    )
+                elif (
+                    resume_seed is not None
+                    and resume_seed.is_plan
+                    and resume_seed.decision == "approve"
+                ):
+                    plan_n = (
+                        len(resume_seed.approved_plan)
+                        if resume_seed.approved_plan
+                        else settings.agentic_max_workers
+                    )
+                    reserve_amount = estimate_resume_hold(
+                        remaining_workers=max(1, plan_n),
+                        binding=binding,
+                        settings=settings,
+                        image_count=image_count,
+                        include_planner=False,
+                        clarify_records=resume_seed.clarify_records,
+                    )
+                elif resume_seed is not None and (
+                    resume_seed.is_plan or resume_seed.is_clarify
+                ):
+                    # Decline / clarify still need remaining orchestration estimate.
+                    reserve_amount = estimate_resume_hold(
+                        remaining_workers=(
+                            1
+                            if effective_agentic_mode != "deep_research"
+                            else settings.agentic_max_workers
+                        ),
+                        binding=binding,
+                        settings=settings,
+                        image_count=image_count,
+                        include_planner=resume_seed.is_clarify,
+                        clarify_records=resume_seed.clarify_records,
+                    )
+                elif effective_agentic_mode == "single":
+                    # run_single admits one primary phase. estimate_run_cost(1)
+                    # prices planner + worker + aggregator and rejects a balance
+                    # that would have fit the phase that actually runs.
+                    reserve_amount = estimate_single_phase_cost(
+                        binding=binding,
+                        settings=settings,
+                        image_count=image_count,
+                    )
+                else:
+                    reserve_amount = estimate_run_cost(
+                        sub_question_count=settings.agentic_max_workers,
+                        binding=binding,
+                        settings=settings,
+                        image_count=image_count,
+                    )
+                reserved = await usage_repo.reserve_platform_budget(
+                    db,
+                    user_id=user.id,
+                    stream_id=stream_id,
+                    amount_usd=reserve_amount,
+                    monthly_quota_usd=effective_quota_usd,
+                )
+                if not reserved:
+                    # Rollback inside the abandon expires `user`. Read the id first
+                    # so the budget error can still be recorded and raised.
+                    owner_id = user.id
+                    await _refuse_unreserved_platform_hold(
+                        db,
+                        stream_id=stream_id,
+                        user_id=owner_id,
+                        conversation_id=conversation_id,
+                        tier_id=body.tier_id,
+                        provider_id=selected_provider_id,
+                    )
+                await db.commit()
+                reserved_hold_usd = float(reserve_amount)
+            try:
+                headroom_parts: list[float | None] = []
+                if reserved_hold_usd is not None:
+                    # This stream's allocated hold — do NOT re-query remaining (that
+                    # would subtract the hold and cause premature reject).
+                    headroom_parts.append(reserved_hold_usd)
+                elif effective_quota_usd > 0:
+                    headroom_parts.append(
+                        await usage_repo.get_platform_remaining_usd(
+                            db,
+                            user_id=user.id,
+                            monthly_quota_usd=effective_quota_usd,
+                        )
+                    )
+                if (
+                    conversation_project is not None
+                    and conversation_project.per_conversation_budget_usd is not None
+                ):
+                    conv_cap = conversation_project.per_conversation_budget_usd
+                else:
+                    conv_cap = user_prefs.per_conversation_budget_usd or 0.0
+                if conv_cap > 0 and not is_temp:
+                    conv_spent = await usage_repo.get_conversation_cost(db, conversation_id)
+                    headroom_parts.append(max(0.0, conv_cap - conv_spent))
+                if headroom_parts:
+                    budget_headroom_usd = compose_headroom(*headroom_parts)
+            except Exception:
+                # B9: post-reservation pre-producer failure must release the hold.
+                if reserved_hold_usd is not None and stream_id is not None:
+                    await _abandon_unstarted_stream_claim(db, stream_id)
+                raise
+
+        # Resumable-stream replay (flag ON, non-temporary turns only). Spawn the
+        # provider pump as a DETACHED producer that survives this connection and
+        # appends every wire event to an in-process ReplayBuffer; this POST then
+        # SUBSCRIBES and tails the buffer. A client disconnect stops the tailing but
+        # NOT the producer (the semantics inversion). Reconnects re-subscribe via
+        # `GET .../stream/{stream_id}`. Temporary chats (no `stream_id`, nothing
+        # persisted, nothing to reconnect to) always take the legacy inline path,
+        # even with the flag on.
+        # B9: guard producer startup so a failure cannot strand the reservation.
+        try:
+            if settings.resumable_streams_enabled and not is_temp and stream_id is not None:
+                ttl = settings.resumable_buffer_ttl_seconds
+                buffer_max_events: int | None = None
+                buffer_max_bytes: int | None = None
+                if effective_agentic_mode is not None:
+                    multiplier = settings.agentic_resumable_buffer_multiplier
+                    buffer_max_events = settings.resumable_buffer_max_events * multiplier
+                    buffer_max_bytes = settings.resumable_buffer_max_bytes * multiplier
+                buffer = await replay_registry.create_async(
+                    stream_id,
+                    ttl_seconds=ttl,
+                    max_events=buffer_max_events,
+                    max_bytes=buffer_max_bytes,
+                )
+                # The detached producer owns a FRESH session derived from THIS request's
+                # engine (the request session closes when the POST returns). Using
+                # `RuntimeContext.from_session(db)` keeps tests bound to the per-test SQLite
+                # file rather than the process-wide env DATABASE_URL factory.
+                spawn_detached_producer(
                     buffer=buffer,
-                    expected_user_message_id=user_message_id,
+                    session_factory=RuntimeContext.from_session(db).session_factory,
+                    provider=provider,
+                    binding=binding,
+                    requested_tier_id=body.tier_id,
+                    conversation_id=conversation_id,
+                    user_message_id=user_message_id,
+                    user_text=provider_user_text,
+                    history=history,
+                    is_temporary=is_temp,
+                    is_initial=is_initial,
+                    user_id=user.id,
+                    api_key=resolved_api_key,
+                    provider_id=selected_provider_id,
+                    stream_id=stream_id,
+                    router_substitution=router_substitution,
+                    web_search=effective_web_search,
+                    response_format=effective_response_format,
+                    attachments=provider_attachments,
+                    custom_instructions=effective_instructions,
+                    memory_facts=memory_facts,
+                    memory_fact_ids=memory_fact_ids,
+                    memory_enabled=memory_enabled,
+                    reasoning_effort_override=reasoning_effort_override,
+                    thinking_override=thinking_override,
+                    monthly_quota_usd_override=effective_quota_usd,
+                    fallback_binding=fallback_binding,
+                    fallback_provider_id=fallback_provider_id,
+                    fallback_api_key=fallback_api_key,
+                    fallback_substitution="provider_fallback",
+                    tool_approval=body.tool_approval,
+                    resume_seed=resume_seed,
+                    agentic_mode=effective_agentic_mode,
+                    budget_headroom_usd=budget_headroom_usd,
+                    requested_agentic_mode=body.agentic_mode,
+                    agentic_coercion_reason=agentic_coercion_reason,
+                    precreated_assistant_id=precreated_assistant_id,
+                )
+
+                async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
+                    # Subscribe at offset 0 and tail. On client disconnect we simply
+                    # stop iterating (the generator is GC'd / aclosed) — the producer
+                    # keeps running and persisting. Subscribers NEVER persist.
+                    async for sse_event in _replay_buffer_events(
+                        request=request,
+                        buffer=buffer,
+                        expected_user_message_id=user_message_id,
+                    ):
+                        yield sse_event
+
+                return _eventsource_response(
+                    _subscriber_stream(),
+                    media_type="text/event-stream",
+                )
+
+            async def _event_stream() -> AsyncIterator[ServerSentEvent]:
+                # `stream_inline_turn` keeps a client disconnect (the Stop button
+                # aborting the fetch) from cancelling the turn mid-persist; see it.
+                async for sse_event in stream_inline_turn(
+                    request=request,
+                    db=db,
+                    provider=provider,
+                    binding=binding,
+                    requested_tier_id=body.tier_id,
+                    conversation_id=None if is_temp else conversation_id,
+                    user_message_id=user_message_id,
+                    user_text=provider_user_text,
+                    history=history,
+                    is_temporary=is_temp,
+                    is_initial=is_initial,
+                    user_id=user.id,
+                    api_key=resolved_api_key,
+                    provider_id=selected_provider_id,
+                    stream_id=stream_id,
+                    router_substitution=router_substitution,
+                    web_search=effective_web_search,
+                    response_format=effective_response_format,
+                    attachments=provider_attachments,
+                    custom_instructions=effective_instructions,
+                    memory_facts=memory_facts,
+                    memory_fact_ids=memory_fact_ids,
+                    memory_enabled=memory_enabled,
+                    reasoning_effort_override=reasoning_effort_override,
+                    thinking_override=thinking_override,
+                    monthly_quota_usd_override=effective_quota_usd,
+                    fallback_binding=fallback_binding,
+                    fallback_provider_id=fallback_provider_id,
+                    fallback_api_key=fallback_api_key,
+                    fallback_substitution="provider_fallback",
+                    tool_approval=body.tool_approval,
+                    resume_seed=resume_seed,
+                    agentic_mode=effective_agentic_mode,
+                    budget_headroom_usd=budget_headroom_usd,
+                    requested_agentic_mode=body.agentic_mode,
+                    agentic_coercion_reason=agentic_coercion_reason,
+                    precreated_assistant_id=precreated_assistant_id,
                 ):
                     yield sse_event
 
             return _eventsource_response(
-                _subscriber_stream(),
+                _event_stream(),
                 media_type="text/event-stream",
             )
-
-        async def _event_stream() -> AsyncIterator[ServerSentEvent]:
-            # `stream_inline_turn` keeps a client disconnect (the Stop button
-            # aborting the fetch) from cancelling the turn mid-persist; see it.
-            async for sse_event in stream_inline_turn(
-                request=request,
-                db=db,
-                provider=provider,
-                binding=binding,
-                requested_tier_id=body.tier_id,
-                conversation_id=None if is_temp else conversation_id,
-                user_message_id=user_message_id,
-                user_text=provider_user_text,
-                history=history,
-                is_temporary=is_temp,
-                is_initial=is_initial,
-                user_id=user.id,
-                api_key=resolved_api_key,
-                provider_id=selected_provider_id,
-                stream_id=stream_id,
-                router_substitution=router_substitution,
-                web_search=effective_web_search,
-                response_format=effective_response_format,
-                attachments=provider_attachments,
-                custom_instructions=effective_instructions,
-                memory_facts=memory_facts,
-                memory_fact_ids=memory_fact_ids,
-                memory_enabled=memory_enabled,
-                reasoning_effort_override=reasoning_effort_override,
-                thinking_override=thinking_override,
-                monthly_quota_usd_override=effective_quota_usd,
-                fallback_binding=fallback_binding,
-                fallback_provider_id=fallback_provider_id,
-                fallback_api_key=fallback_api_key,
-                fallback_substitution="provider_fallback",
-                tool_approval=body.tool_approval,
-                resume_seed=resume_seed,
-                agentic_mode=effective_agentic_mode,
-                budget_headroom_usd=budget_headroom_usd,
-                requested_agentic_mode=body.agentic_mode,
-                agentic_coercion_reason=agentic_coercion_reason,
-                precreated_assistant_id=precreated_assistant_id,
-            ):
-                yield sse_event
-
-        return _eventsource_response(
-            _event_stream(),
-            media_type="text/event-stream",
-        )
-    except Exception:
-        if reserved_hold_usd is not None and stream_id is not None:
-            await _abandon_unstarted_stream_claim(db, stream_id)
+        except Exception:
+            if reserved_hold_usd is not None and stream_id is not None:
+                await _abandon_unstarted_stream_claim(db, stream_id)
+            raise
+    except BaseException:
+        if resume_seed is None and precreated_assistant_id is not None:
+            await discard_unfilled_assistant_attempt(
+                derive_session_factory(db),
+                precreated_assistant_id,
+                request_session=db,
+            )
         raise
 
 

@@ -1884,6 +1884,188 @@ async def test_continue_with_no_stopped_turn_errors(
     assert response.json()["error"]["code"] == "NOTHING_TO_CONTINUE"
 
 
+async def _rewrite_last_user_text(
+    session_factory: async_sessionmaker[AsyncSession],
+    conv_id: str,
+    text: str,
+) -> None:
+    async with session_factory() as session:
+        row = (
+            await session.execute(
+                select(Message)
+                .where(
+                    Message.conversation_id == UUID(conv_id),
+                    Message.role == "user",
+                )
+                .order_by(Message.created_at.desc(), Message.id.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+        row.parts = [{"type": "text", "text": text}]
+        await session.commit()
+
+
+async def test_continue_provider_error_drops_null_attempt_and_keeps_stopped(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A failed continue must not leave the null claim in front of the partial.
+
+    Continue commits an assistant with status null before the provider runs.
+    FORCE_ERROR on the replayed user turn raises mid-stream. The claim has to
+    be deleted, the stopped partial has to remain the only assistant, and a
+    later continue with a new client id has to be accepted.
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "hello"},
+    )
+    stopped_id, _user_id = await _mark_trailing_assistant_stopped(
+        session_factory, conv_id
+    )
+    # Continue sends a fixed instruction. The fake raises when the replayed
+    # user turn still carries the FORCE_ERROR marker.
+    await _rewrite_last_user_text(
+        session_factory, conv_id, "FORCE_ERROR: blow up mid-stream"
+    )
+
+    failed = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "ignored on continue",
+            "continueTurn": True,
+        },
+    )
+    assert [name for name, _payload in failed][-1] == "error"
+    assert "terminal" not in [name for name, _payload in failed]
+
+    async with session_factory() as session:
+        assistants = (
+            await session.execute(
+                select(Message)
+                .where(
+                    Message.conversation_id == UUID(conv_id),
+                    Message.role == "assistant",
+                )
+                .order_by(Message.created_at.asc(), Message.id.asc())
+            )
+        ).scalars().all()
+        assert [row.status for row in assistants] == ["stopped"]
+        assert str(assistants[0].id) == stopped_id
+        assert all(row.status is not None for row in assistants)
+
+    listed = await client.get(f"/api/conversations/{conv_id}")
+    assert listed.status_code == 200
+    listed_assistants = [
+        message
+        for message in listed.json()["messages"]
+        if message["role"] == "assistant"
+    ]
+    assert [message.get("status") for message in listed_assistants] == ["stopped"]
+
+    await _rewrite_last_user_text(session_factory, conv_id, "hello")
+    continued = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "ignored on continue",
+            "continueTurn": True,
+        },
+    )
+    assert [name for name, _payload in continued][-1] == "terminal"
+    answer = "".join(
+        str(payload.get("text", ""))
+        for name, payload in continued
+        if name == "answer_delta"
+    )
+    assert answer.startswith("…continued: ")
+
+
+async def test_regenerate_provider_error_drops_null_attempt_and_retries_client_id(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A failed regenerate must not leave a null assistant or stick the client id.
+
+    The same clientMessageId is posted again. A leftover null row is not done
+    or stopped, so replay rejects it with 409. The retry must be accepted.
+    """
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    first = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "FORCE_ERROR: blow up mid-stream",
+        },
+    )
+    assert [name for name, _payload in first][-1] == "error"
+
+    regen_body = {
+        "clientMessageId": str(uuid4()),
+        "tierId": "smart",
+        "text": "ignored on regenerate",
+        "regenerate": True,
+    }
+    failed = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        regen_body,
+    )
+    assert [name for name, _payload in failed][-1] == "error"
+    assert "terminal" not in [name for name, _payload in failed]
+
+    async with session_factory() as session:
+        assistants = (
+            await session.execute(
+                select(Message).where(
+                    Message.conversation_id == UUID(conv_id),
+                    Message.role == "assistant",
+                )
+            )
+        ).scalars().all()
+        assert not any(row.status is None for row in assistants)
+        assert assistants == []
+
+    listed = await client.get(f"/api/conversations/{conv_id}")
+    assert listed.status_code == 200
+    listed_assistants = [
+        message
+        for message in listed.json()["messages"]
+        if message["role"] == "assistant"
+    ]
+    assert listed_assistants == []
+
+    retried = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        regen_body,
+    )
+    assert [name for name, _payload in retried][-1] == "error"
+    async with session_factory() as session:
+        assistants = (
+            await session.execute(
+                select(Message).where(
+                    Message.conversation_id == UUID(conv_id),
+                    Message.role == "assistant",
+                )
+            )
+        ).scalars().all()
+        assert assistants == []
+
+
 # M2: edit path ---------------------------------------------------------------
 
 
@@ -3859,3 +4041,56 @@ async def test_reasoning_part_persists_duration(
     duration = reasoning[0].get("durationSec")
     assert isinstance(duration, float)
     assert duration >= 0.02
+
+
+async def test_discard_keeps_flushed_approval_after_identity_map_drop(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A flushed awaiting_approval row stays after it leaves the identity map.
+
+    The pause flush is not committed yet. Dropping the instance must not make
+    the cleanup treat the row as a null claim and delete it.
+    """
+    from app.streaming.handler import discard_unfilled_assistant_attempt
+
+    async with session_factory() as session:
+        user = User(is_anonymous=True, name="Guest")
+        session.add(user)
+        await session.flush()
+        convo = Conversation(
+            user_id=user.id,
+            title="Pause",
+            selected_tier_id="smart",
+            pinned=False,
+        )
+        session.add(convo)
+        await session.flush()
+        assistant = Message(
+            conversation_id=convo.id,
+            client_message_id=uuid4(),
+            role="assistant",
+            parts=[],
+            status=None,
+            attribution=None,
+            created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        )
+        session.add(assistant)
+        await session.commit()
+        attempt_id = assistant.id
+
+    async with session_factory() as session:
+        row = await session.get(Message, attempt_id)
+        assert row is not None
+        row.status = "awaiting_approval"
+        await session.flush()
+        session.expunge(row)
+        await discard_unfilled_assistant_attempt(
+            session_factory,
+            attempt_id,
+            request_session=session,
+        )
+
+    async with session_factory() as session:
+        kept = await session.get(Message, attempt_id)
+        assert kept is not None
+        assert kept.status == "awaiting_approval"

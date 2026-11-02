@@ -43,6 +43,7 @@ import jsonschema
 import structlog
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm.util import identity_key
 from sse_starlette import ServerSentEvent
 
 from app.agentic.clarify import (
@@ -61,7 +62,7 @@ from app.agentic.continuation import (
 from app.agentic.orchestrator import run_orchestrator, run_single
 from app.agentic.retry import is_retryable_provider_error
 from app.config import get_settings
-from app.db.models import Message
+from app.db.models import AnalyticsEvent, Message
 from app.db.repositories import analytics as analytics_repo
 from app.db.repositories import conversations as conversations_repo
 from app.db.repositories import memory_facts as memory_facts_repo
@@ -164,6 +165,126 @@ from app.tools.protocol import ToolCallRequest
 
 log = logging.getLogger(__name__)
 _struct_log = structlog.get_logger(__name__)
+
+
+def _identity_map_attempt_status(
+    session: AsyncSession, message_id: UUID
+) -> str | None:
+    """Status of this attempt if it is already in the identity map.
+
+    Reads the in-memory value only. A missing object, or one whose status is
+    still null, means the request transaction must roll back.
+    """
+    attempt = session.identity_map.get(identity_key(Message, message_id))
+    if not isinstance(attempt, Message):
+        return None
+    # In-memory only. An expired attribute is absent here; do not lazy-load.
+    value = attempt.__dict__.get("status")
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _uncommitted_analytics_payloads(
+    session: AsyncSession,
+) -> list[dict[str, Any]]:
+    """Copy analytics inserts that this transaction flushed but did not commit."""
+    payloads: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    candidates: list[object] = list(session.new)
+    transaction = session.get_transaction()
+    new_states = getattr(transaction, "_new", None) if transaction is not None else None
+    if new_states:
+        for state in list(new_states):
+            obj = state.obj()
+            if obj is not None:
+                candidates.append(obj)
+    for obj in candidates:
+        if not isinstance(obj, AnalyticsEvent) or id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        properties = obj.properties
+        payloads.append(
+            {
+                "id": obj.id,
+                "user_id": obj.user_id,
+                "event_type": obj.event_type,
+                "properties": dict(properties) if isinstance(properties, dict) else {},
+                "created_at": obj.created_at,
+            }
+        )
+    return payloads
+
+
+async def discard_unfilled_assistant_attempt(
+    session_factory: async_sessionmaker[AsyncSession],
+    message_id: UUID | None,
+    *,
+    request_session: AsyncSession | None = None,
+    preserve_telemetry: bool = False,
+) -> None:
+    """Drop a regenerate or continue claim that never left status null.
+
+    Uses a fresh session. The request session may be poisoned, and on SQLite
+    it can hold a read transaction that blocks this delete until it commits
+    or rolls back. Commit that session only when this attempt has a non-null
+    status, read from the identity map or, if that instance is gone, from
+    the request transaction so a flushed ``done``, ``stopped``, or
+    ``awaiting_approval`` stays visible to the fresh delete. Otherwise roll
+    it back. Rollback releases the read lock, leaves the history commit in
+    place, and drops flushed analytics plus an uncommitted
+    compaction charge. A row already updated to one of those statuses is left
+    in place. The stopped partial a continue was extending is a different row
+    and is not touched.
+
+    ``preserve_telemetry`` is only for the swallowed provider-error path,
+    which returns normally so ``get_db`` would have committed the flushed
+    analytics. Those rows are rewritten on the fresh session. The request
+    transaction is not committed to keep them.
+    """
+    if message_id is None:
+        return
+    telemetry: list[dict[str, Any]] = []
+    if request_session is not None:
+        try:
+            status = _identity_map_attempt_status(request_session, message_id)
+            if status is None:
+                # Flush drops the strong ref. A later cancel can expunge the
+                # instance before commit, so the map miss is not proof the
+                # row is still null. This read sees the flushed status.
+                loaded = await messages_repo.get_by_id(request_session, message_id)
+                if (
+                    loaded is not None
+                    and loaded.role == "assistant"
+                    and isinstance(loaded.status, str)
+                ):
+                    status = loaded.status
+            if status is not None:
+                await request_session.commit()
+            else:
+                if preserve_telemetry:
+                    telemetry = _uncommitted_analytics_payloads(request_session)
+                await request_session.rollback()
+        except Exception as exc:
+            log.warning(
+                "assistant.unfilled_attempt_request_commit_failed",
+                exc_info=exc,
+            )
+            telemetry = []
+            with contextlib.suppress(Exception):
+                await request_session.rollback()
+    try:
+        async with session_factory() as fresh:
+            for payload in telemetry:
+                fresh.add(AnalyticsEvent(**payload))
+            await messages_repo.delete_assistant_if_status_null(
+                fresh,
+                message_id=message_id,
+            )
+            await fresh.commit()
+    except Exception as exc:
+        log.warning("assistant.unfilled_attempt_discard_failed", exc_info=exc)
+
 
 # Detached background tasks (title autogen). `asyncio.create_task` only holds
 # a weak reference to the returned Task; without a strong ref the task can
@@ -772,6 +893,14 @@ async def stream_and_persist(
         runtime=turn_runtime, stream_id=stream_id, user_id=user_id
     )
 
+    async def _drop_unfilled_attempt(*, preserve_telemetry: bool = False) -> None:
+        await discard_unfilled_assistant_attempt(
+            turn_runtime.session_factory,
+            precreated_assistant_id,
+            request_session=db,
+            preserve_telemetry=preserve_telemetry,
+        )
+
     async def _delivery_interrupted(exc: BaseException) -> None:
         """AC-11: report an interrupted EARLY yield to the shared lifecycle.
 
@@ -797,6 +926,7 @@ async def stream_and_persist(
         exception type describing the same event. The lifecycle drops a duplicate
         report anyway; not making it keeps the classification honest.
         """
+        await _drop_unfilled_attempt()
         if turn_lifecycle.outcome is None:
             if isinstance(exc, asyncio.CancelledError):
                 await turn_lifecycle.hard_cancelled()
@@ -2151,6 +2281,7 @@ async def stream_and_persist(
             # reached the persisted transcript without the fold ever seeing it.
             _fold(seeded_result)
     except BaseException as setup_exc:
+        await _drop_unfilled_attempt()
         await turn_lifecycle.source_failed(setup_exc)
         raise
     if seeded_result is not None:
@@ -2331,8 +2462,9 @@ async def stream_and_persist(
                 # fallback route is available and we haven't already retried,
                 # tear down the first pump and restart on the fallback route —
                 # exactly once. Otherwise re-raise into the top-level
-                # `except Exception` so we emit an `error` frame and persist
-                # nothing (the assistant row was never committed).
+                # `except Exception` so we emit an `error` frame. A normal send
+                # has no assistant row yet. A regenerate or continue claim that
+                # is still status null is deleted on that path.
                 if _fallback_pending(ev.exc):
                     fallback_attempted = True
                     # Drain the pump's terminal `None` (the pump always enqueues
@@ -3036,14 +3168,16 @@ async def stream_and_persist(
         # The turn was interrupted, not failed by the provider, so the lifecycle
         # terminalizes an uncommitted row as `stopped` (matching the
         # disconnect/explicit-stop semantics) and leaves a committed one alone.
-        # No partial assistant row is persisted here: there is no clean
-        # partial-persist contract for a hard cancel.
+        # No partial assistant row is written here. A regenerate or continue
+        # claim that is still status null is deleted; a row already updated
+        # to done, stopped, or awaiting_approval stays.
         #
         # A hard worker *crash* (SIGKILL / OOM) delivers no CancelledError, so
         # this never runs and the row would stay `active`. That gap is closed by
         # the orphan-stream reaper (`app.streaming.reaper` +
         # `streams_repo.reap_stale_active`), which sweeps stale `active` rows to
         # `"error"` on startup and on an interval (PRD 04 §5.1).
+        await _drop_unfilled_attempt()
         await turn_lifecycle.hard_cancelled()
         # Re-raise so the event loop sees the cancellation rather than
         # swallowing it into a fake `error` envelope. The cleanup above must
@@ -3055,6 +3189,12 @@ async def stream_and_persist(
         # already captured in `exc`; the pump forwards via the queue and never
         # re-raises on await, so no real exception is hidden here.
         await turn_lifecycle.cancel_registered()
+        # The claim was committed before the provider ran. Delete it only
+        # while status is still null, before the error frame, so a sink
+        # failure on that frame cannot leave the row behind. This path
+        # returns normally, so rewrite flushed analytics on the fresh
+        # session instead of committing the request transaction.
+        await _drop_unfilled_attempt(preserve_telemetry=True)
         if isinstance(exc, AppError):
             # Provider raised a typed error (e.g. RATE_LIMITED with
             # retryAfterMs); surface its envelope verbatim.
@@ -3077,8 +3217,9 @@ async def stream_and_persist(
                 body="The provider stream errored.",
             )
         yield encode_error(envelope)
-        # `error` does NOT persist an assistant row (plan §"Persistence" rule),
-        # and the lifecycle terminalizes the durable `stream` row for us — on a
+        # `error` does NOT keep an assistant row (plan §"Persistence" rule).
+        # The unfilled regenerate or continue claim was deleted above. The
+        # lifecycle terminalizes the durable `stream` row for us — on a
         # fresh session, because the request session may be poisoned after the
         # provider error, and only while the turn is still pre-commit, so a
         # failure AFTER a committed terminal cannot rewrite its status. The
@@ -3271,8 +3412,14 @@ async def run_detached_producer(
         # Shutdown/lifespan cancel. The durable `stream` bookkeeping is already
         # closed out as `stopped` — by the generator's own CancelledError branch
         # when the cancel landed inside it, or by the `hard_cancelled()` above
-        # when it landed on the sink. Either way the buffer's kind agrees with
-        # the row; we just close the buffer so subscribers drain.
+        # when it landed on the sink. A cancel on the sink never enters that
+        # branch (the generator only sees GeneratorExit), so drop a still-null
+        # attempt here too. Either way the buffer's kind agrees with the row;
+        # we just close the buffer so subscribers drain.
+        await discard_unfilled_assistant_attempt(
+            session_factory,
+            precreated_assistant_id,
+        )
         terminal_kind = "stopped"
         with contextlib.suppress(Exception):
             await buffer.mark_done(terminal_kind=terminal_kind)

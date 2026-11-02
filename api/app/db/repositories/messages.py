@@ -233,6 +233,28 @@ async def update_assistant_message(
     return row
 
 
+async def delete_assistant_if_status_null(
+    db: AsyncSession,
+    *,
+    message_id: UUID,
+) -> bool:
+    """Delete one assistant row only while its status is still null.
+
+    A regenerate or continue attempt is inserted before the provider runs.
+    When that attempt never reaches ``done``, ``stopped``, or
+    ``awaiting_approval``, the claim must not stay in history. A row that
+    already has a status is left in place. Returns True when a row was deleted.
+    """
+    row = await get_by_id(db, message_id)
+    if row is None or row.role != "assistant" or row.status is not None:
+        return False
+    # SQLite tests do not enforce FK CASCADE. Drop votes before the message.
+    await db.execute(delete(Vote).where(Vote.message_id == message_id))
+    await db.delete(row)
+    await db.flush()
+    return True
+
+
 async def load_history(
     db: AsyncSession,
     conversation_id: UUID,

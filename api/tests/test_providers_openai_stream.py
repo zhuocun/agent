@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -223,13 +224,19 @@ async def test_stream_disjoint_buckets_and_answer_text() -> None:
     assert binding is not None
     assert binding.provider_id == "openai"
     bd = compute_cost_breakdown(usage=final_usage, binding=binding)
-    expected = (
-        45 * binding.list_price_in_per_m
-        + 90 * binding.list_price_out_per_m
-        + 10 * binding.list_price_out_per_m  # reasoning bills at OUTPUT rate
-        + 5 * (binding.cache_read_per_m or 0.0)
-    ) / 1_000_000
-    assert bd.subtotal_usd == pytest.approx(expected)
+    cache_per_m = binding.cache_read_per_m if binding.cache_read_per_m is not None else 0.0
+    expected = float(
+        (
+            (
+                Decimal(45) * Decimal(str(binding.list_price_in_per_m))
+                + Decimal(90) * Decimal(str(binding.list_price_out_per_m))
+                + Decimal(10) * Decimal(str(binding.list_price_out_per_m))
+                + Decimal(5) * Decimal(str(cache_per_m))
+            )
+            / Decimal(1_000_000)
+        ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+    )
+    assert bd.subtotal_usd == expected
     # Breakdown surfaces the disjoint counts verbatim.
     assert bd.input_tokens == 45
     assert bd.output_tokens == 90

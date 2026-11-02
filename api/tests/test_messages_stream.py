@@ -1468,6 +1468,73 @@ async def test_regenerate_drops_trailing_assistant_and_re_streams(
         assert str(asst_row.id) == regen_terminal["messageId"]
 
 
+async def test_regenerate_replay_same_client_message_id_does_not_bill_again(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Replaying one regenerate clientMessageId keeps the one assistant and cost."""
+    from app.db.models import UsageRollup
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {
+            "clientMessageId": str(uuid4()),
+            "tierId": "smart",
+            "text": "hello",
+        },
+    )
+    regen_body = {
+        "clientMessageId": str(uuid4()),
+        "tierId": "smart",
+        "text": "ignored on regen",
+        "regenerate": True,
+    }
+    regen = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        regen_body,
+    )
+    assistant_id = next(p for n, p in regen if n == "terminal")["messageId"]
+
+    async with session_factory() as session:
+        cost_after_first = (
+            await session.execute(
+                select(UsageRollup.cost_usd).where(UsageRollup.user_id == user_id)
+            )
+        ).scalar_one()
+
+    replay = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        regen_body,
+    )
+    replay_assistant_id = next(p for n, p in replay if n == "terminal")["messageId"]
+    assert replay_assistant_id == assistant_id
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Message).where(Message.conversation_id == UUID(conv_id))
+            )
+        ).scalars().all()
+        assistants = [row for row in rows if row.role == "assistant"]
+        user_row = next(row for row in rows if row.role == "user")
+        assert len(assistants) == 1
+        assert str(assistants[0].id) == assistant_id
+        assert assistants[0].client_message_id == UUID(str(regen_body["clientMessageId"]))
+        assert user_row.client_message_id != assistants[0].client_message_id
+        cost_after_replay = (
+            await session.execute(
+                select(UsageRollup.cost_usd).where(UsageRollup.user_id == user_id)
+            )
+        ).scalar_one()
+        assert cost_after_replay == cost_after_first
+
+
 async def test_regenerate_with_no_trailing_assistant_errors(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
@@ -1696,6 +1763,74 @@ async def test_continue_appends_linked_assistant_and_keeps_partial(
             await session.execute(select(UsageRollup.used).where(UsageRollup.user_id == user_id))
         ).scalar_one()
         assert used_after == used_before + 1
+
+
+async def test_stopped_continue_replay_same_client_message_id_does_not_insert_another(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A second post of a stopped continue replays that assistant."""
+    from app.db.models import UsageRollup
+
+    await client.get("/api/bootstrap")
+    user_id = await _current_user_id(session_factory)
+    conv_id = await _seed_conversation(session_factory, user_id=user_id)
+    await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        {"clientMessageId": str(uuid4()), "tierId": "smart", "text": "hello"},
+    )
+    await _mark_trailing_assistant_stopped(session_factory, conv_id)
+    continue_body = {
+        "clientMessageId": str(uuid4()),
+        "tierId": "smart",
+        "text": "ignored on continue",
+        "continueTurn": True,
+    }
+    continued = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        continue_body,
+    )
+    continued_id = next(p for n, p in continued if n == "terminal")["messageId"]
+    async with session_factory() as session:
+        attempt = (
+            await session.execute(select(Message).where(Message.id == UUID(continued_id)))
+        ).scalar_one()
+        attempt.status = "stopped"
+        await session.commit()
+        cost_after_continue = (
+            await session.execute(
+                select(UsageRollup.cost_usd).where(UsageRollup.user_id == user_id)
+            )
+        ).scalar_one()
+
+    replay = await _collect_sse(
+        client,
+        f"/api/conversations/{conv_id}/messages",
+        continue_body,
+    )
+    assert next(p for n, p in replay if n == "terminal")["messageId"] == continued_id
+
+    async with session_factory() as session:
+        assistants = (
+            await session.execute(
+                select(Message).where(
+                    Message.conversation_id == UUID(conv_id),
+                    Message.role == "assistant",
+                )
+            )
+        ).scalars().all()
+        assert len(assistants) == 2
+        replayed = next(row for row in assistants if str(row.id) == continued_id)
+        assert replayed.status == "stopped"
+        assert replayed.client_message_id == UUID(str(continue_body["clientMessageId"]))
+        cost_after_replay = (
+            await session.execute(
+                select(UsageRollup.cost_usd).where(UsageRollup.user_id == user_id)
+            )
+        ).scalar_one()
+        assert cost_after_replay == cost_after_continue
 
 
 async def test_continue_with_regenerate_is_mutually_exclusive(

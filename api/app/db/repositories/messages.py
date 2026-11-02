@@ -63,6 +63,26 @@ async def get_by_client_message_id(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def get_assistant_by_client_message_id(
+    db: AsyncSession,
+    conversation_id: UUID,
+    client_message_id: UUID,
+) -> Message | None:
+    """Look up the assistant attempt stored under a regenerate or continue id.
+
+    User rows keep the original send id. The regenerate or continue id is a
+    different id, stored on the assistant row created for that attempt. The
+    unique constraint is one row per id, so a replay finds this row and does
+    not start a second attempt.
+    """
+    stmt = select(Message).where(
+        Message.conversation_id == conversation_id,
+        Message.client_message_id == client_message_id,
+        Message.role == "assistant",
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
 async def get_assistant_for_user_message(
     db: AsyncSession,
     user_message_id: UUID,
@@ -134,11 +154,13 @@ async def create_assistant_message(
     *,
     conversation_id: UUID,
     parts: list[dict[str, Any]],
-    status: str,
-    attribution: dict[str, Any],
+    status: str | None,
+    attribution: dict[str, Any] | None,
     responds_to_message_id: UUID | None = None,
     cost_usd: float | None = None,
     server_state: dict[str, Any] | None = None,
+    client_message_id: UUID | None = None,
+    request_fingerprint: dict[str, Any] | None = None,
 ) -> Message:
     """Persist an assistant turn. `status` is `"done"` or `"stopped"`.
 
@@ -157,10 +179,17 @@ async def create_assistant_message(
 
     ``server_state`` (H-012) holds HITL continuations and other server-only
     metadata that must never appear in API serializers.
+
+    ``client_message_id`` is set only for a regenerate or continue attempt,
+    and only on that attempt's assistant row. Ordinary assistant rows keep
+    it null so the original send id stays on the user row. The unique
+    ``(conversation_id, client_message_id)`` constraint then rejects a second
+    insert of the same attempt id. Null ids do not collide.
     """
     msg = Message(
         conversation_id=conversation_id,
-        client_message_id=None,
+        client_message_id=client_message_id,
+        request_fingerprint=request_fingerprint,
         role="assistant",
         parts=parts,
         status=status,
@@ -174,6 +203,34 @@ async def create_assistant_message(
     await db.flush()
     await db.refresh(msg)
     return msg
+
+
+async def update_assistant_message(
+    db: AsyncSession,
+    *,
+    message_id: UUID,
+    parts: list[dict[str, Any]],
+    status: str,
+    attribution: dict[str, Any],
+    cost_usd: float | None = None,
+    server_state: dict[str, Any] | None = None,
+) -> Message | None:
+    """Fill the assistant row created for a regenerate or continue attempt.
+
+    Keeps ``client_message_id`` and ``responds_to_message_id`` so the attempt
+    id stays the idempotency key. Returns None when the row is already gone.
+    """
+    row = await get_by_id(db, message_id)
+    if row is None:
+        return None
+    row.parts = parts
+    row.status = status
+    row.attribution = attribution
+    row.cost_usd = cost_usd
+    row.server_state = server_state
+    await db.flush()
+    await db.refresh(row)
+    return row
 
 
 async def load_history(

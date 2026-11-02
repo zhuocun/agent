@@ -690,6 +690,7 @@ async def stream_and_persist(
     budget_headroom_usd: float | None = None,
     requested_agentic_mode: Literal["single", "deep_research"] | None = None,
     agentic_coercion_reason: Literal["entitlement"] | None = None,
+    precreated_assistant_id: UUID | None = None,
 ) -> AsyncGenerator[ServerSentEvent, None]:
     """Drive the provider, persist, yield wire SSE events.
 
@@ -2017,16 +2018,32 @@ async def stream_and_persist(
                 orchestration_mode=pending_orchestration_mode,
                 run_receipt=pause_receipt,
             )
-        row = await messages_repo.create_assistant_message(
-            db=target_session,
-            conversation_id=conversation_id,
-            parts=parts,
-            status=status,
-            attribution=attribution.model_dump(by_alias=True, exclude_none=True),
-            responds_to_message_id=user_message_id,
-            cost_usd=cost_usd,
-            server_state=server_state,
-        )
+        attribution_payload = attribution.model_dump(by_alias=True, exclude_none=True)
+        row: Message | None = None
+        if precreated_assistant_id is not None:
+            # Regenerate / continue claimed this row, and its client message id,
+            # before the provider call. Update it in place so the attempt id
+            # stays on the one assistant the ledger charges.
+            row = await messages_repo.update_assistant_message(
+                target_session,
+                message_id=precreated_assistant_id,
+                parts=parts,
+                status=status,
+                attribution=attribution_payload,
+                cost_usd=cost_usd,
+                server_state=server_state,
+            )
+        if row is None:
+            row = await messages_repo.create_assistant_message(
+                db=target_session,
+                conversation_id=conversation_id,
+                parts=parts,
+                status=status,
+                attribution=attribution_payload,
+                responds_to_message_id=user_message_id,
+                cost_usd=cost_usd,
+                server_state=server_state,
+            )
         # When the caller owns the session (stop/fresh-session case, commit=False)
         # we only flush here and let the caller commit AFTER bumping usage, so the
         # assistant row and the meter increment land in ONE commit. The
@@ -2856,15 +2873,27 @@ async def stream_and_persist(
                 await messages_repo.count_assistant_messages(db, conversation_id) == 0
             )
             parts = _build_parts()
-            row = await messages_repo.create_assistant_message(
-                db=db,
-                conversation_id=conversation_id,
-                parts=parts,
-                status="done",
-                attribution=attribution.model_dump(by_alias=True, exclude_none=True),
-                responds_to_message_id=user_message_id,
-                cost_usd=billable_cost,
-            )
+            attribution_payload = attribution.model_dump(by_alias=True, exclude_none=True)
+            row: Message | None = None
+            if precreated_assistant_id is not None:
+                row = await messages_repo.update_assistant_message(
+                    db,
+                    message_id=precreated_assistant_id,
+                    parts=parts,
+                    status="done",
+                    attribution=attribution_payload,
+                    cost_usd=billable_cost,
+                )
+            if row is None:
+                row = await messages_repo.create_assistant_message(
+                    db=db,
+                    conversation_id=conversation_id,
+                    parts=parts,
+                    status="done",
+                    attribution=attribution_payload,
+                    responds_to_message_id=user_message_id,
+                    cost_usd=billable_cost,
+                )
             # Bump usage_rollup before the commit so both writes land
             # atomically. `user_id` is set on every non-temporary path (the
             # route always passes it for owned conversations). If callers
@@ -3120,6 +3149,7 @@ async def run_detached_producer(
     budget_headroom_usd: float | None = None,
     requested_agentic_mode: Literal["single", "deep_research"] | None = None,
     agentic_coercion_reason: Literal["entitlement"] | None = None,
+    precreated_assistant_id: UUID | None = None,
 ) -> None:
     """Drive `stream_and_persist` DETACHED from any HTTP connection (flag ON).
 
@@ -3201,6 +3231,7 @@ async def run_detached_producer(
                 budget_headroom_usd=budget_headroom_usd,
                 requested_agentic_mode=requested_agentic_mode,
                 agentic_coercion_reason=agentic_coercion_reason,
+                precreated_assistant_id=precreated_assistant_id,
             )
             try:
                 async for event in producer:

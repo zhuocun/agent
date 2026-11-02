@@ -501,6 +501,39 @@ async def _abandon_unstarted_stream_claim(
             await db.commit()
 
 
+async def _refuse_unreserved_platform_hold(
+    db: AsyncSession,
+    *,
+    stream_id: UUID | None,
+    user_id: UUID,
+    conversation_id: UUID,
+    tier_id: str,
+    provider_id: str,
+) -> None:
+    """Roll the uncommitted turn back and raise the existing budget error.
+
+    ``reserve_platform_budget`` writes no hold when remaining is below the
+    amount. The history change is still in this transaction, so the rollback
+    inside the abandon drops the user insert, regenerate delete, or edit
+    truncation together with the stream claim.
+    """
+    await _abandon_unstarted_stream_claim(db, stream_id)
+    async with derive_session_factory(db)() as event_db:
+        await analytics_repo.record(
+            event_db,
+            user_id=user_id,
+            event_type="budget.exceeded",
+            properties={
+                "conversationId": str(conversation_id),
+                "requestedTierId": tier_id,
+                "providerId": provider_id,
+                "scope": "reservation",
+            },
+        )
+        await event_db.commit()
+    raise _budget_exceeded()
+
+
 def _duplicate_in_flight() -> AppError:
     return AppError(
         ErrorEnvelope(
@@ -1692,6 +1725,96 @@ async def _maybe_replay(
     raise _duplicate_in_flight()
 
 
+async def _maybe_replay_controlled_attempt(
+    db: AsyncSession,
+    conversation_id: UUID,
+    client_uuid: UUID,
+    request_fingerprint: dict[str, object] | None = None,
+    request: Request | None = None,
+) -> EventSourceResponse | None:
+    """Replay one regenerate or continue attempt keyed by its own client id.
+
+    The id lives on the assistant row for that attempt, not on the user row.
+    A done or stopped row replays. An in-flight row rejoins its active stream
+    when resumable streams are on, and otherwise rejects the duplicate. None
+    means this id has not been claimed, so the caller may start the attempt.
+    """
+    assistant = await messages_repo.get_assistant_by_client_message_id(
+        db,
+        conversation_id,
+        client_uuid,
+    )
+    if assistant is None:
+        return None
+    if (
+        request_fingerprint is not None
+        and assistant.request_fingerprint is not None
+        and not _request_fingerprints_match(
+            assistant.request_fingerprint,
+            request_fingerprint,
+        )
+    ):
+        raise _idempotency_mismatch()
+
+    user_message_id = assistant.responds_to_message_id
+    if assistant.status in ("done", "stopped") and assistant.attribution:
+        if user_message_id is None:
+            raise _duplicate_in_flight()
+        return _semantic_replay_response(
+            parts_to_semantic_replay(
+                assistant.parts,
+                assistant.attribution,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant.id,
+            )
+        )
+
+    settings = get_settings()
+    if settings.resumable_streams_enabled and user_message_id is not None:
+        latest_user_msg = await messages_repo.get_last_user_message(db, conversation_id)
+        active_stream = await streams_repo.get_active_for_conversation(
+            db, conversation_id=conversation_id
+        )
+        if (
+            active_stream is not None
+            and latest_user_msg is not None
+            and latest_user_msg.id == user_message_id
+        ):
+            active_stream_id = active_stream.id
+            try:
+                buffer = await replay_registry.get_async(
+                    active_stream_id,
+                    ttl_seconds=settings.resumable_buffer_ttl_seconds,
+                )
+            except ReplayLogTruncatedError as exc:
+                raise _stream_replay_truncated() from exc
+            if buffer is not None:
+                return _eventsource_response(
+                    _replay_buffer_events(
+                        request=request,
+                        buffer=buffer,
+                        expected_user_message_id=user_message_id,
+                    ),
+                    media_type="text/event-stream",
+                )
+
+            async def _unavailable_stream() -> AsyncIterator[ServerSentEvent]:
+                yield encode_submitted(
+                    SubmittedEvent(
+                        message_id=str(user_message_id),
+                        stream_id=str(active_stream_id),
+                    )
+                )
+                yield encode_error(_stream_replay_unavailable_envelope())
+
+            return _eventsource_response(
+                _unavailable_stream(),
+                media_type="text/event-stream",
+            )
+
+    raise _duplicate_in_flight()
+
+
 @router.post("/{conversation_id}/messages")
 @limiter.limit(lambda: get_settings().rate_limit_messages)
 async def send_message(
@@ -1713,10 +1836,11 @@ async def send_message(
       — the user message at that id is deleted along with everything after).
       Insert a new user message with the request body's `text` +
       `clientMessageId` at the truncation point, then re-stream.
-    - Idempotency: if a prior assistant message exists for this
-      `(conversation_id, client_message_id)`, replay it as one frame.
-      Regenerate / edit by definition use a NEW clientMessageId so this
-      branch should never hit on those paths.
+    - Idempotency: one `clientMessageId` is one send intent. A normal send or
+      edit stores that id on the user row. Regenerate and continue store
+      their own id on the assistant row for that attempt. Replaying either
+      id returns the existing assistant, or rejoins its active stream, and
+      does not start a second billed turn.
     - Ownership: 404 if the conversation isn't owned by the caller (and isn't
       a known temporary id for them).
     - Unknown tier: 400.
@@ -1833,13 +1957,24 @@ async def send_message(
                     conversation_project.custom_instructions,
                 )
 
-        # Idempotency: prior user message for this client_message_id?
-        # Regenerate / continue / toolApproval reuse an existing user row and the
-        # FE mints a fresh id, so they have no persisted client_message_id row to
-        # replay. Normal sends and edits both insert a user row; exact fingerprint
+        # Idempotency before any provider call or ledger write. Regenerate and
+        # continue keep the original send id on the user row and store THIS
+        # id on the assistant attempt. A replay must win before prepare, which
+        # would otherwise delete the prior assistant and bill another turn.
+        # Normal sends and edits both insert a user row; exact fingerprint
         # matches can safely replay before budget/provider gates, while
-        # mismatches get a 409.
-        if not body.regenerate and not body.continue_turn and body.tool_approval is None:
+        # mismatches get a 409. toolApproval settlement stays on its own path.
+        if body.regenerate or body.continue_turn:
+            replay = await _maybe_replay_controlled_attempt(
+                db,
+                conversation_id,
+                client_uuid,
+                request_fingerprint,
+                request,
+            )
+            if replay is not None:
+                return replay
+        elif body.tool_approval is None:
             replay = await _maybe_replay(
                 db,
                 conversation_id,
@@ -2107,6 +2242,10 @@ async def send_message(
     #   editMessageId -> truncate from that user message inclusive, insert new
     #   toolApproval -> already prepared before claim (H-003)
     #   default -> existing M1 path
+    # Regenerate / continue claim an assistant row for this client id before
+    # the provider call. The handler fills that same row. The unique constraint
+    # is the race backstop; a later post of the id replays it.
+    precreated_assistant_id: UUID | None = None
     try:
         if body.regenerate:
             (
@@ -2165,9 +2304,9 @@ async def send_message(
                 # commits atomically with the turn below (not on idempotent replay,
                 # which returns earlier without reaching this insert).
                 await conversations_repo.touch_updated_at(db, conversation_id)
-                # Commit so the user message is durable before we stream — the
-                # EventSourceResponse will reuse this session, so flush+commit now.
-                await db.commit()
+                # The user row stays uncommitted until the platform hold, if
+                # any, is reserved in this same transaction. The commit is
+                # below, still before the provider call.
             except IntegrityError:
                 # Concurrent POSTs with the same clientMessageId can both pass the
                 # idempotency check above and race on INSERT; one will lose to the
@@ -2187,6 +2326,33 @@ async def send_message(
                 raise _duplicate_in_flight() from None
             user_message_id = user_msg_row.id
             provider_user_text = body.text
+        if body.regenerate or body.continue_turn:
+            try:
+                attempt_row = await messages_repo.create_assistant_message(
+                    db=db,
+                    conversation_id=conversation_id,
+                    parts=[],
+                    status=None,
+                    attribution=None,
+                    responds_to_message_id=user_message_id,
+                    client_message_id=client_uuid,
+                    request_fingerprint=request_fingerprint,
+                )
+            except IntegrityError:
+                # The other request inserted this attempt id first. Roll back
+                # our delete or touch and replay their assistant.
+                await db.rollback()
+                replay = await _maybe_replay_controlled_attempt(
+                    db,
+                    conversation_id,
+                    client_uuid,
+                    request_fingerprint,
+                    request,
+                )
+                if replay is not None:
+                    return replay
+                raise _duplicate_in_flight() from None
+            precreated_assistant_id = attempt_row.id
     except AppError:
         # continueTurn / regenerate / edit can still raise after claim; release
         # so get_db's commit cannot strand an active row.
@@ -2301,6 +2467,67 @@ async def send_message(
     fallback_api_key: str | None = None
     if fallback_route is not None:
         fallback_binding, fallback_provider_id, fallback_api_key = fallback_route
+
+    # History (user insert, regenerate delete, edit truncation, continue touch,
+    # and the attempt row) is still uncommitted. Reserve a non-resume platform
+    # hold in that same transaction. A False reserve rolls the history back
+    # and returns the budget error. Commit the history and the hold together
+    # only after the hold succeeds, before compaction or the provider call.
+    # Plan / clarify approval settlement commits inside its own prepare and is
+    # not moved here.
+    budget_headroom_usd: float | None = None
+    reserved_hold_usd: float | None = None
+    if resume_seed is None:
+        nonresume_agentic_mode = (
+            body.agentic_mode
+            if settings.agentic_enabled and settings.tools_enabled
+            else None
+        )
+        if (
+            nonresume_agentic_mode is not None
+            and resolved_api_key is None
+            and effective_quota_usd > 0
+            and stream_id is not None
+            and not is_temp
+        ):
+            image_count = sum(
+                1
+                for attachment in provider_attachments
+                if attachment.media_type == "image"
+            )
+            if nonresume_agentic_mode == "single":
+                reserve_amount = estimate_single_phase_cost(
+                    binding=binding,
+                    settings=settings,
+                    image_count=image_count,
+                )
+            else:
+                reserve_amount = estimate_run_cost(
+                    sub_question_count=settings.agentic_max_workers,
+                    binding=binding,
+                    settings=settings,
+                    image_count=image_count,
+                )
+            reserved = await usage_repo.reserve_platform_budget(
+                db,
+                user_id=user.id,
+                stream_id=stream_id,
+                amount_usd=reserve_amount,
+                monthly_quota_usd=effective_quota_usd,
+            )
+            if not reserved:
+                # Rollback inside the abandon expires `user`. Read the id first.
+                owner_id = user.id
+                await _refuse_unreserved_platform_hold(
+                    db,
+                    stream_id=stream_id,
+                    user_id=owner_id,
+                    conversation_id=conversation_id,
+                    tier_id=body.tier_id,
+                    provider_id=selected_provider_id,
+                )
+            reserved_hold_usd = float(reserve_amount)
+        await db.commit()
 
     # Context-window compaction (FR-35). Keep the replayed history within the
     # finalized binding's token budget before the provider call. A no-op for the
@@ -2623,11 +2850,10 @@ async def send_message(
     # The orchestrator's platform headroom is THIS stream's allocated hold (not
     # global remaining after subtracting that hold). Prior billed pause spend
     # is compared separately via ResumeToolSeed prior_* ledger seeds (B4/B5).
-    budget_headroom_usd: float | None = None
-    reserved_hold_usd: float | None = None
     if effective_agentic_mode is not None and resolved_api_key is None:
         if (
-            effective_quota_usd > 0
+            reserved_hold_usd is None
+            and effective_quota_usd > 0
             and stream_id is not None
             and not is_temp
         ):
@@ -2706,21 +2932,14 @@ async def send_message(
                 # Rollback inside the abandon expires `user`. Read the id first
                 # so the budget error can still be recorded and raised.
                 owner_id = user.id
-                await _abandon_unstarted_stream_claim(db, stream_id)
-                async with derive_session_factory(db)() as event_db:
-                    await analytics_repo.record(
-                        event_db,
-                        user_id=owner_id,
-                        event_type="budget.exceeded",
-                        properties={
-                            "conversationId": str(conversation_id),
-                            "requestedTierId": body.tier_id,
-                            "providerId": selected_provider_id,
-                            "scope": "reservation",
-                        },
-                    )
-                    await event_db.commit()
-                raise _budget_exceeded()
+                await _refuse_unreserved_platform_hold(
+                    db,
+                    stream_id=stream_id,
+                    user_id=owner_id,
+                    conversation_id=conversation_id,
+                    tier_id=body.tier_id,
+                    provider_id=selected_provider_id,
+                )
             await db.commit()
             reserved_hold_usd = float(reserve_amount)
         try:
@@ -2820,6 +3039,7 @@ async def send_message(
                 budget_headroom_usd=budget_headroom_usd,
                 requested_agentic_mode=body.agentic_mode,
                 agentic_coercion_reason=agentic_coercion_reason,
+                precreated_assistant_id=precreated_assistant_id,
             )
 
             async def _subscriber_stream() -> AsyncIterator[ServerSentEvent]:
@@ -2878,6 +3098,7 @@ async def send_message(
                 budget_headroom_usd=budget_headroom_usd,
                 requested_agentic_mode=body.agentic_mode,
                 agentic_coercion_reason=agentic_coercion_reason,
+                precreated_assistant_id=precreated_assistant_id,
             ):
                 yield sse_event
 
@@ -3123,9 +3344,9 @@ async def _prepare_regenerate(
     await messages_repo.delete_trailing_assistants(db, conversation_id=conversation_id)
     # Regenerate accepts a new turn (reusing the existing user message), so
     # bump the conversation to the top of the sidebar. Same session as the
-    # trailing-assistant delete; commits atomically with the turn below.
+    # trailing-assistant delete. The caller commits it with the platform hold,
+    # before the provider call, so a refused hold restores these assistants.
     await conversations_repo.touch_updated_at(db, conversation_id)
-    await db.commit()
     # Load history with the trailing assistant(s) gone, then strip the
     # trailing user message — the provider receives prior turns only, plus
     # `user_text` as the current submission.
@@ -3227,9 +3448,9 @@ async def _prepare_continue(
     # instruction goes out as the new user turn.
     history = await messages_repo.load_history(db, conversation_id)
     # No history mutation happens on continue, but bump the conversation so it
-    # rises in the sidebar like any other accepted turn.
+    # rises in the sidebar like any other accepted turn. The caller commits
+    # this touch with the attempt row, before the provider call.
     await conversations_repo.touch_updated_at(db, conversation_id)
-    await db.commit()
     return user_message_id, history, _CONTINUE_INSTRUCTION, []
 
 
@@ -3817,10 +4038,10 @@ async def _prepare_edit(
             request_fingerprint=request_fingerprint,
         )
         # Edit-and-rerun accepts a new turn, so bump the conversation to the
-        # top of the sidebar. Same session as the replacement user message;
-        # commits atomically with the turn below.
+        # top of the sidebar. Same session as the truncation and the replacement
+        # user message. The caller commits them with the platform hold so a
+        # refused hold restores the truncated history.
         await conversations_repo.touch_updated_at(db, conversation_id)
-        await db.commit()
     except IntegrityError as exc:
         # An edit submission with a clientMessageId that collides with an
         # already-existing user row is an error: the FE must mint a fresh id.

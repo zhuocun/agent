@@ -253,6 +253,117 @@ async def test_subscription_event_upgrades_to_pro_and_bootstrap_surfaces_state(
     assert pro_conversation.status_code == 201, pro_conversation.text
 
 
+async def test_basil_subscription_period_end_on_first_item_grants_pro(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stripe API 2025-05-28.basil puts the period end on items.data[0].
+
+    A paid subscription with no top-level current_period_end must still
+    grant Pro. This fails while the parser reads only the top-level field.
+    """
+    _enable_fake_billing(monkeypatch)
+
+    await client.get("/api/bootstrap")
+    await _upgrade(client)
+    user = await _current_user(session_factory)
+
+    subscription = await _post_fake_webhook(
+        client,
+        {
+            "id": "evt_subscription_basil_items",
+            "type": "customer.subscription.updated",
+            "created": 300,
+            "data": {
+                "object": {
+                    "id": "sub_basil",
+                    "customer": "cus_basil",
+                    "status": "active",
+                    "items": {
+                        "data": [
+                            {"current_period_end": _future_period_end()},
+                        ]
+                    },
+                    "metadata": {"user_id": str(user.id)},
+                }
+            },
+        },
+    )
+    assert subscription["processed"] is True
+
+    async with session_factory() as session:
+        refreshed_user = await session.get(User, user.id)
+        assert refreshed_user is not None
+        assert refreshed_user.plan_label == "Pro"
+
+    boot = await client.get("/api/bootstrap")
+    assert boot.status_code == 200, boot.text
+    assert boot.json()["account"]["billing"]["proEnabled"] is True
+
+
+async def test_credit_webhook_commit_failure_is_5xx_and_retry_grants_once(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The handler commits before it returns 200.
+
+    A commit error must surface as 5xx so Stripe retries. A later delivery
+    of the same credit event, after a successful commit, grants once.
+    """
+    _enable_fake_billing(monkeypatch)
+
+    await client.get("/api/bootstrap")
+    await _upgrade(client)
+    user = await _current_user(session_factory)
+    event = {
+        "id": "evt_credit_commit",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_credit_commit",
+                "customer": "cus_credit_commit",
+                "payment_status": "paid",
+                "metadata": {
+                    "user_id": str(user.id),
+                    "purpose": "credit_purchase",
+                    "credit_amount_usd": "12.50",
+                },
+            }
+        },
+    }
+
+    async def _failing_commit(self: AsyncSession) -> None:
+        raise RuntimeError("forced billing commit failure")
+
+    monkeypatch.setattr(AsyncSession, "commit", _failing_commit)
+    failed = await client.post("/api/billing/webhook", json=event)
+    assert failed.status_code >= 500
+    assert failed.status_code != 200
+
+    monkeypatch.undo()
+    _enable_fake_billing(monkeypatch)
+
+    async with session_factory() as session:
+        balance_after_failure = await usage_repo.get_credit_balance(
+            session, user_id=user.id
+        )
+    assert balance_after_failure == pytest.approx(0.0)
+
+    first = await _post_fake_webhook(client, event)
+    second = await _post_fake_webhook(client, event)
+    assert first["processed"] is True
+    assert second["processed"] is False
+    async with session_factory() as session:
+        balance = await usage_repo.get_credit_balance(session, user_id=user.id)
+        grants = (
+            await session.execute(select(BillingWebhookEvent))
+        ).scalars().all()
+    assert balance == pytest.approx(12.5)
+    assert [row.event_id for row in grants] == ["evt_credit_commit"]
+
+
 async def test_credit_purchase_webhook_is_event_idempotent(
     client: AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],

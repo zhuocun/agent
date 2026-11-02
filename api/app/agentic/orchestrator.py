@@ -648,6 +648,7 @@ async def _finalize_synthesis(
     emit_verifier_bracket: bool = False,
     merged_sources: Sequence[SourceItem] | None = None,
     ledger: CostLedger | None = None,
+    tripped: StopReason | None = None,
 ) -> AsyncIterator[ProviderEvent]:
     """Emit the `aggregator` subagent + optional verifier receipt + run totals.
 
@@ -663,6 +664,10 @@ async def _finalize_synthesis(
     continuation; `aggregate.synthesize` cannot express that clause, so it is
     appended here and raises `partial`.
 
+    ``tripped`` (doc §11.8) names a run bound that already fired. The suffix is
+    its own channel: it raises `partial` and leaves `budget_halted` on the USD
+    gate.
+
     ``ledger`` (AC-02) is the run's accounting owner: the aggregator and verifier
     phases settle into it and the terminal `RunCost` carries its receipt. Without
     one (direct unit calls) the terminal keeps the scalar-only shape.
@@ -673,7 +678,11 @@ async def _finalize_synthesis(
     if merged_sources:
         yield Sources(items=list(merged_sources), subagent_id=_AGGREGATOR_ID)
     yield AnswerDelta(
-        text=synthesis + _superseded_label(superseded_worker_count),
+        text=(
+            synthesis
+            + _superseded_label(superseded_worker_count)
+            + _trip_label(tripped)
+        ),
         subagent_id=_AGGREGATOR_ID,
     )
     aggregator_usage = UsageUpdate()
@@ -731,8 +740,11 @@ async def _finalize_synthesis(
         effective_budget_halted
         or failed_worker_count > 0
         # FL-09 / FL-08: a cancelled sibling or a degraded verification is a
-        # partial answer even when no worker failed and no cap was hit.
+        # partial answer even when no worker failed and no cap was hit. A
+        # latched trip uses the same `partial` field and does not set
+        # `budget_halted`.
         or superseded_worker_count > 0
+        or tripped is not None
         or verifier.verification_degraded(verifier_result, verifier_outcome)
     )
     if ledger is not None:
@@ -1720,6 +1732,9 @@ async def _resume_worker_continuation(
         resume_records = clarify.records_from_questions_and_answers([], parsed)
     resume_clarification_answers = clarify.nonblank_answers(resume_records)
     verifier_pricer = verifier_cost_for_usage or cost_for_usage
+    # Read after the resumed worker returns. The early budget halt below runs
+    # before any provider round, so it stays None there.
+    trip_reason: StopReason | None = None
 
     async def _emit_synthesis(*, halted: bool) -> AsyncIterator[ProviderEvent]:
         ordered_outputs = [
@@ -1768,6 +1783,7 @@ async def _resume_worker_continuation(
                 budget_halted=halted,
                 failed=failed_workers,
                 superseded=restored_superseded,
+                tripped=trip_reason,
                 budget_headroom_usd=budget_headroom_usd,
                 scaffolded=scaffolded,
                 artifacts=ordered_artifacts,
@@ -1806,6 +1822,7 @@ async def _resume_worker_continuation(
                 completed_workers=completed_count,
                 merged_sources=merged_sources or None,
                 ledger=ledger,
+                tripped=trip_reason,
             ):
                 yield event
 
@@ -1840,6 +1857,17 @@ async def _resume_worker_continuation(
             partial=True,
             budget_halted=True,
         )
+        # The paused worker already produced prose. Fold it in so a cap halt
+        # does not synthesize "no worker findings" over a non-empty partial.
+        # No provider call and no cancelled tool terminal — the run is refusing
+        # further spend, not abandoning a live tool.
+        if continuation.partial_answer.strip():
+            results[paused_id] = WorkerOutput(
+                subagent_id=paused_id,
+                sub_question=continuation.paused_sub_question or sub_question,
+                answer=continuation.partial_answer,
+                source_ids=continuation.source_ids,
+            )
         async for event in _emit_synthesis(halted=True):
             yield event
         return
@@ -1880,6 +1908,7 @@ async def _resume_worker_continuation(
         # second nested pause does not drop the first approval's tool_result.
         tool_transcript.append(tool_transcript_part(resume_tool_result, paused_id))
 
+    tripwire = RunTripwire.from_settings(settings)
     runner = WorkerRunner(
         settings=settings,
         routes=WorkerRoutes(
@@ -1914,6 +1943,9 @@ async def _resume_worker_continuation(
             )
         ),
         parent=parent,
+        # One tripwire for this continuation. The handle shares its clock and
+        # latch; the loop checks them, and the synthesis tail reads the latch.
+        tripwire=tripwire.loop_handle(paused_id),
     )
     seed = ResumedWorkerSeed(
         index=index,
@@ -1984,6 +2016,7 @@ async def _resume_worker_continuation(
     async with contextlib.aclosing(runner.run(seed)) as stream:
         async for event in stream:
             yield event
+    trip_reason = tripwire.tripped
     outcome = runner.outcome
     if outcome is None:  # pragma: no cover - `run` always settles an outcome
         return

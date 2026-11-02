@@ -811,16 +811,35 @@ async def claim_and_settle_approval_outcome(
                 )
             raise
 
-        async with lock:
-            settled_ok = await _settle_under_claim(
-                db,
-                message_id=message_id,
-                tool_call_id=tool_call_id,
-                minted_claim=minted_claim,
-                result=result,
-                label=label,
-                subagent_id=part_subagent,
-            )
+        try:
+            async with lock:
+                settled_ok = await _settle_under_claim(
+                    db,
+                    message_id=message_id,
+                    tool_call_id=tool_call_id,
+                    minted_claim=minted_claim,
+                    result=result,
+                    label=label,
+                    subagent_id=part_subagent,
+                )
+        except asyncio.CancelledError:
+            # Execute already returned. A cancel on an await inside this settle
+            # (``_lock_message`` / ``_cas_persist_parts``) is an exit exception:
+            # SQLAlchemy invalidates the connection and leaves the session
+            # pending rollback. Roll it back before writing the result already
+            # in hand. The cancelled placeholder above stays the in-execute path.
+            await db.rollback()
+            async with lock:
+                await _settle_under_claim(
+                    db,
+                    message_id=message_id,
+                    tool_call_id=tool_call_id,
+                    minted_claim=minted_claim,
+                    result=result,
+                    label=label,
+                    subagent_id=part_subagent,
+                )
+            raise
         if not settled_ok:
             # Executed but settlement did not land — fail closed so callers do not
             # treat an unpersisted side effect as durable success. FL-31: write

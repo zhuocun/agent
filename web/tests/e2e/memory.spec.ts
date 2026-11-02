@@ -61,6 +61,66 @@ test.describe("transparent long-term memory", () => {
     });
   });
 
+  test("locks every fact row while a save is in flight", async ({ page }) => {
+    let releasePatch: (() => void) | undefined;
+    let patches = 0;
+    let markStarted: (() => void) | undefined;
+    const patchStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    await page.route("**/api/account/memory/*", async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      patches += 1;
+      if (patches === 1) {
+        markStarted?.();
+        await new Promise<void>((resolve) => {
+          releasePatch = resolve;
+        });
+      }
+      return route.fallback();
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await openMemory(page);
+    const dialog = page.getByTestId("memory-dialog");
+
+    await dialog.getByTestId("memory-add-input").fill("Fact A");
+    await dialog.getByTestId("memory-add-button").click();
+    // Wait on the ledger row. getByText also matches the add field's value, so
+    // it can pass before the create response clears that field.
+    const facts = dialog.getByTestId("memory-fact");
+    await expect(facts.filter({ hasText: "Fact A" })).toBeVisible();
+    await dialog.getByTestId("memory-add-input").fill("Fact B");
+    await dialog.getByTestId("memory-add-button").click();
+    await expect(facts.filter({ hasText: "Fact B" })).toBeVisible();
+
+    const rows = facts;
+    await expect(rows).toHaveCount(2);
+    // Newest first: row 0 is Fact B, row 1 is Fact A.
+    await rows.nth(1).getByTestId("memory-edit-button").click();
+    await dialog.getByTestId("memory-edit-input").fill("Fact A revised");
+    const save = dialog.getByTestId("memory-edit-save");
+    await save.click();
+    await patchStarted;
+
+    await expect(save).toBeDisabled();
+    await expect(rows.nth(0).getByTestId("memory-edit-button")).toBeDisabled();
+    await expect(
+      rows.nth(0).getByTestId("memory-delete-button"),
+    ).toBeDisabled();
+
+    await save.click({ force: true });
+    expect(patches).toBe(1);
+
+    releasePatch?.();
+    await expect(dialog.getByTestId("memory-edit-input")).toHaveCount(0);
+    await expect(
+      dialog.getByText("Fact A revised", { exact: true }),
+    ).toBeVisible();
+    await expect(dialog.getByText("Fact B", { exact: true })).toBeVisible();
+  });
+
   test("memory used here indicator appears on a turn that used memory", async ({
     page,
   }) => {

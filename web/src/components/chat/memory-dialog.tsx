@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState, type JSX } from "react";
+import { useEffect, useId, useRef, useState, type JSX } from "react";
 import { Brain, Pencil, Plus, Trash2, X } from "lucide-react";
 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -19,6 +19,13 @@ import {
 import type { MemoryFact } from "@/lib/types";
 
 const FACT_MAX = 2000;
+
+// One object so a successful save can clear the id and the text together, and
+// only when this editor is still the row that was saved.
+interface FactEditor {
+  id: string;
+  text: string;
+}
 
 export interface MemoryDialogProps {
   open: boolean;
@@ -61,9 +68,11 @@ export function MemoryBody({
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
   // The fact currently being edited inline, plus its working text.
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingText, setEditingText] = useState("");
+  const [editor, setEditor] = useState<FactEditor | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Synchronous in-flight guard. `busyId` state is not visible until the next
+  // render, so a second Save/Delete click in the same turn must read this.
+  const busyIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -107,33 +116,40 @@ export function MemoryBody({
   };
 
   const startEdit = (fact: MemoryFact): void => {
-    setEditingId(fact.id);
-    setEditingText(fact.content);
+    if (busyIdRef.current !== null) return;
+    setEditor({ id: fact.id, text: fact.content });
   };
 
   const cancelEdit = (): void => {
-    setEditingId(null);
-    setEditingText("");
+    setEditor(null);
   };
 
   const handleSaveEdit = async (id: string): Promise<void> => {
-    const content = editingText.trim();
-    if (!content || busyId) return;
+    if (busyIdRef.current !== null) return;
+    const content = editor?.id === id ? editor.text.trim() : "";
+    if (!content) return;
+    busyIdRef.current = id;
     setBusyId(id);
     setError(null);
     try {
       const updated = await updateMemoryFact(id, content);
       setFacts((prev) => prev.map((f) => (f.id === id ? updated : f)));
-      cancelEdit();
+      // Read the live editor from state, not the pre-await closure. Clear the
+      // text only together with the saved id; a newer edit of another fact stays.
+      setEditor((live) => (live?.id === id ? null : live));
     } catch {
       setError("Couldn't update that fact. Please try again.");
     } finally {
-      setBusyId(null);
+      if (busyIdRef.current === id) {
+        busyIdRef.current = null;
+        setBusyId(null);
+      }
     }
   };
 
   const handleDelete = async (id: string): Promise<void> => {
-    if (busyId) return;
+    if (busyIdRef.current !== null) return;
+    busyIdRef.current = id;
     setBusyId(id);
     setError(null);
     try {
@@ -142,7 +158,10 @@ export function MemoryBody({
     } catch {
       setError("Couldn't delete that fact. Please try again.");
     } finally {
-      setBusyId(null);
+      if (busyIdRef.current === id) {
+        busyIdRef.current = null;
+        setBusyId(null);
+      }
     }
   };
 
@@ -230,15 +249,20 @@ export function MemoryBody({
                     data-testid="memory-fact"
                   >
                     <Card variant="glass" density="regular">
-                      {editingId === fact.id ? (
+                      {editor?.id === fact.id ? (
                         <>
                           <Textarea
-                            value={editingText}
+                            value={editor.text}
                             maxLength={FACT_MAX}
                             rows={2}
-                            onChange={(event) =>
-                              setEditingText(event.currentTarget.value)
-                            }
+                            onChange={(event) => {
+                              const value = event.currentTarget.value;
+                              setEditor((live) =>
+                                live && live.id === fact.id
+                                  ? { ...live, text: value }
+                                  : live,
+                              );
+                            }}
                             className="min-h-16 [@media(hover:none)]:min-h-16 focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                             data-testid="memory-edit-input"
                           />
@@ -258,8 +282,7 @@ export function MemoryBody({
                               size="sm"
                               onClick={() => void handleSaveEdit(fact.id)}
                               disabled={
-                                busyId === fact.id ||
-                                editingText.trim().length === 0
+                                busyId !== null || editor.text.trim().length === 0
                               }
                               data-testid="memory-edit-save"
                             >
@@ -283,7 +306,7 @@ export function MemoryBody({
                               size="icon"
                               aria-label="Edit fact"
                               onClick={() => startEdit(fact)}
-                              disabled={busyId === fact.id}
+                              disabled={busyId !== null}
                               data-testid="memory-edit-button"
                             >
                               <Pencil aria-hidden className="size-3.5" />
@@ -294,7 +317,7 @@ export function MemoryBody({
                               size="icon"
                               aria-label="Delete fact"
                               onClick={() => void handleDelete(fact.id)}
-                              disabled={busyId === fact.id}
+                              disabled={busyId !== null}
                               data-testid="memory-delete-button"
                             >
                               <Trash2 aria-hidden className="size-3.5" />

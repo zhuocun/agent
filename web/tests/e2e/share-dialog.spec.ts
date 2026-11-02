@@ -58,6 +58,24 @@ async function openShareDialog(page: Page): Promise<string> {
   return convoId;
 }
 
+// The dialog is modal, so the sidebar "New chat" control is inert while it is
+// open. The app listens for the new-chat shortcut on window capture. Dispatch
+// that combo in the page so Chromium does not treat Ctrl+Shift+O as bookmarks.
+async function startNewChatWhileShareOpen(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "O",
+        code: "KeyO",
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  });
+}
+
 test.describe("share dialog (live BE)", () => {
   test("creates a link against the live BE and the minted URL opens the public view", async ({
     page,
@@ -403,5 +421,90 @@ test.describe("share dialog (stubbed branches)", () => {
     await expect(
       page.getByRole("button", { name: "Create share link" }),
     ).toBeVisible();
+  });
+
+  test("drops the link when a new chat clears the conversation", async ({
+    page,
+  }) => {
+    await page.route("**/api/conversations/*/share", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          shareToken: SHARE_TOKEN,
+          sharePath: SHARE_PATH,
+        }),
+      });
+    });
+
+    await openShareDialog(page);
+    await page.getByRole("button", { name: "Create share link" }).click();
+    await expect(
+      page.getByRole("textbox", { name: "Public share link" }),
+    ).toBeVisible();
+
+    await startNewChatWhileShareOpen(page);
+
+    // The dialog stays open, but Copy / Remove belong to the previous id.
+    await expect(
+      page.getByRole("heading", { name: "Share chat" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Create a public link to this conversation."),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("textbox", { name: "Public share link" }),
+    ).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Remove link" })).toHaveCount(
+      0,
+    );
+    await expect(
+      page.getByRole("button", { name: "Create share link" }),
+    ).toBeDisabled();
+  });
+
+  test("ignores a share link that returns after the conversation changes", async ({
+    page,
+  }) => {
+    let releaseCreate: (() => void) | undefined;
+    let markHit: (() => void) | undefined;
+    const createHit = new Promise<void>((resolve) => {
+      markHit = resolve;
+    });
+    await page.route("**/api/conversations/*/share", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      markHit?.();
+      await new Promise<void>((resolve) => {
+        releaseCreate = resolve;
+      });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          shareToken: SHARE_TOKEN,
+          sharePath: SHARE_PATH,
+        }),
+      });
+    });
+
+    await openShareDialog(page);
+    await page.getByRole("button", { name: "Create share link" }).click();
+    await createHit;
+    await startNewChatWhileShareOpen(page);
+    releaseCreate?.();
+
+    await expect(
+      page.getByRole("heading", { name: "Share chat" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("textbox", { name: "Public share link" }),
+    ).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Remove link" })).toHaveCount(
+      0,
+    );
+    await expect(
+      page.getByRole("button", { name: "Create share link" }),
+    ).toBeDisabled();
   });
 });

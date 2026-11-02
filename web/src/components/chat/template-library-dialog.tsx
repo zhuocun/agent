@@ -22,6 +22,15 @@ const TITLE_MAX = 200;
 const BODY_MAX = 10000;
 const DESCRIPTION_MAX = 500;
 
+// One object so a successful save can clear every field together, and only
+// when this editor is still the row that was saved.
+interface TemplateEditor {
+  id: string;
+  title: string;
+  body: string;
+  description: string;
+}
+
 export interface TemplateLibraryDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -53,12 +62,13 @@ export function TemplateLibraryBody({
   const [draftDescription, setDraftDescription] = useState("");
   const [adding, setAdding] = useState(false);
   // The template currently being edited inline, plus its working fields.
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingTitle, setEditingTitle] = useState("");
-  const [editingBody, setEditingBody] = useState("");
-  const [editingDescription, setEditingDescription] = useState("");
+  const [editor, setEditor] = useState<TemplateEditor | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Synchronous in-flight guard. `busyId` state is not visible until the next
+  // render, so a second Save/Delete click in the same turn must read this.
+  const busyIdRef = useRef<string | null>(null);
   const editRowRef = useRef<HTMLLIElement>(null);
+  const editingId = editor?.id ?? null;
 
   useEffect(() => {
     if (editingId) {
@@ -115,42 +125,51 @@ export function TemplateLibraryBody({
   };
 
   const startEdit = (template: PromptTemplate): void => {
-    setEditingId(template.id);
-    setEditingTitle(template.title);
-    setEditingBody(template.body);
-    setEditingDescription(template.description ?? "");
+    if (busyIdRef.current !== null) return;
+    setEditor({
+      id: template.id,
+      title: template.title,
+      body: template.body,
+      description: template.description ?? "",
+    });
   };
 
   const cancelEdit = (): void => {
-    setEditingId(null);
-    setEditingTitle("");
-    setEditingBody("");
-    setEditingDescription("");
+    setEditor(null);
   };
 
   const handleSaveEdit = async (id: string): Promise<void> => {
-    const title = editingTitle.trim();
-    const body = editingBody.trim();
-    if (!title || !body || busyId) return;
+    if (busyIdRef.current !== null) return;
+    const title = editor?.id === id ? editor.title.trim() : "";
+    const body = editor?.id === id ? editor.body.trim() : "";
+    const description = editor?.id === id ? editor.description.trim() : "";
+    if (!title || !body) return;
+    busyIdRef.current = id;
     setBusyId(id);
     setError(null);
     try {
       const updated = await updatePromptTemplate(id, {
         title,
         body,
-        description: editingDescription.trim() || null,
+        description: description || null,
       });
       setTemplates((prev) => prev.map((t) => (t.id === id ? updated : t)));
-      cancelEdit();
+      // Read the live editor from state, not the pre-await closure. Clear the
+      // fields only together with the saved id; a newer edit of another row stays.
+      setEditor((live) => (live?.id === id ? null : live));
     } catch {
       setError("Couldn't update that template. Please try again.");
     } finally {
-      setBusyId(null);
+      if (busyIdRef.current === id) {
+        busyIdRef.current = null;
+        setBusyId(null);
+      }
     }
   };
 
   const handleDelete = async (id: string): Promise<void> => {
-    if (busyId) return;
+    if (busyIdRef.current !== null) return;
+    busyIdRef.current = id;
     setBusyId(id);
     setError(null);
     try {
@@ -159,7 +178,10 @@ export function TemplateLibraryBody({
     } catch {
       setError("Couldn't delete that template. Please try again.");
     } finally {
-      setBusyId(null);
+      if (busyIdRef.current === id) {
+        busyIdRef.current = null;
+        setBusyId(null);
+      }
     }
   };
 
@@ -245,37 +267,52 @@ export function TemplateLibraryBody({
                 {templates.map((template) => (
                   <li
                     key={template.id}
-                    ref={editingId === template.id ? editRowRef : undefined}
+                    ref={editor?.id === template.id ? editRowRef : undefined}
                     data-testid="template-item"
                   >
                     <Card variant="glass" density="regular">
-                      {editingId === template.id ? (
+                      {editor?.id === template.id ? (
                         <>
                           <Input
-                            value={editingTitle}
+                            value={editor.title}
                             maxLength={TITLE_MAX}
-                            onChange={(event) =>
-                              setEditingTitle(event.currentTarget.value)
-                            }
+                            onChange={(event) => {
+                              const value = event.currentTarget.value;
+                              setEditor((live) =>
+                                live && live.id === template.id
+                                  ? { ...live, title: value }
+                                  : live,
+                              );
+                            }}
                             className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                             data-testid="template-edit-title"
                           />
                           <Textarea
-                            value={editingBody}
+                            value={editor.body}
                             maxLength={BODY_MAX}
                             rows={3}
-                            onChange={(event) =>
-                              setEditingBody(event.currentTarget.value)
-                            }
+                            onChange={(event) => {
+                              const value = event.currentTarget.value;
+                              setEditor((live) =>
+                                live && live.id === template.id
+                                  ? { ...live, body: value }
+                                  : live,
+                              );
+                            }}
                             className="focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                             data-testid="template-edit-body"
                           />
                           <Input
-                            value={editingDescription}
+                            value={editor.description}
                             maxLength={DESCRIPTION_MAX}
-                            onChange={(event) =>
-                              setEditingDescription(event.currentTarget.value)
-                            }
+                            onChange={(event) => {
+                              const value = event.currentTarget.value;
+                              setEditor((live) =>
+                                live && live.id === template.id
+                                  ? { ...live, description: value }
+                                  : live,
+                              );
+                            }}
                             className="h-auto py-2 leading-5 [@media(hover:none)]:h-auto focus-visible:shadow-none focus:border-ring focus:ring-2 focus:ring-ring/25"
                             placeholder="Description (optional)"
                             data-testid="template-edit-description"
@@ -296,9 +333,9 @@ export function TemplateLibraryBody({
                               size="sm"
                               onClick={() => void handleSaveEdit(template.id)}
                               disabled={
-                                busyId === template.id ||
-                                editingTitle.trim().length === 0 ||
-                                editingBody.trim().length === 0
+                                busyId !== null ||
+                                editor.title.trim().length === 0 ||
+                                editor.body.trim().length === 0
                               }
                               data-testid="template-edit-save"
                             >
@@ -332,7 +369,7 @@ export function TemplateLibraryBody({
                               size="icon"
                               aria-label="Edit template"
                               onClick={() => startEdit(template)}
-                              disabled={busyId === template.id}
+                              disabled={busyId !== null}
                               data-testid="template-edit-button"
                             >
                               <Pencil aria-hidden className="size-3.5" />
@@ -343,7 +380,7 @@ export function TemplateLibraryBody({
                               size="icon"
                               aria-label="Delete template"
                               onClick={() => void handleDelete(template.id)}
-                              disabled={busyId === template.id}
+                              disabled={busyId !== null}
                               data-testid="template-delete-button"
                             >
                               <Trash2 aria-hidden className="size-3.5" />

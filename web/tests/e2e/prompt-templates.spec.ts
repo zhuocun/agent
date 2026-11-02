@@ -68,6 +68,74 @@ test.describe("prompt library + user-authored templates", () => {
     });
   });
 
+  test("locks every template row while a save is in flight", async ({
+    page,
+  }) => {
+    let releasePatch: (() => void) | undefined;
+    let patches = 0;
+    let markStarted: (() => void) | undefined;
+    const patchStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    await page.route("**/api/account/prompt-templates/*", async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      patches += 1;
+      if (patches === 1) {
+        markStarted?.();
+        await new Promise<void>((resolve) => {
+          releasePatch = resolve;
+        });
+      }
+      return route.fallback();
+    });
+
+    await page.goto("/");
+    await waitForBootstrap(page);
+    await openTemplates(page);
+    const dialog = page.getByTestId("template-dialog");
+
+    await dialog.getByTestId("template-add-title").fill("Template A");
+    await dialog.getByTestId("template-add-body").fill("Body A");
+    await dialog.getByTestId("template-add-button").click();
+    // Wait on the library row. A title still sitting in the add field would
+    // satisfy getByText before the create response clears that field.
+    const items = dialog.getByTestId("template-item");
+    await expect(items.filter({ hasText: "Template A" })).toBeVisible();
+    await dialog.getByTestId("template-add-title").fill("Template B");
+    await dialog.getByTestId("template-add-body").fill("Body B");
+    await dialog.getByTestId("template-add-button").click();
+    await expect(items.filter({ hasText: "Template B" })).toBeVisible();
+
+    const rows = items;
+    await expect(rows).toHaveCount(2);
+    // Newest first: row 0 is Template B, row 1 is Template A.
+    await rows.nth(1).getByTestId("template-edit-button").click();
+    await dialog.getByTestId("template-edit-title").fill("Template A revised");
+    const save = dialog.getByTestId("template-edit-save");
+    await save.click();
+    await patchStarted;
+
+    await expect(save).toBeDisabled();
+    await expect(
+      rows.nth(0).getByTestId("template-edit-button"),
+    ).toBeDisabled();
+    await expect(
+      rows.nth(0).getByTestId("template-delete-button"),
+    ).toBeDisabled();
+
+    await save.click({ force: true });
+    expect(patches).toBe(1);
+
+    releasePatch?.();
+    await expect(dialog.getByTestId("template-edit-title")).toHaveCount(0);
+    await expect(
+      dialog.getByText("Template A revised", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByText("Template B", { exact: true }),
+    ).toBeVisible();
+  });
+
   test("insert a template into the composer via the toolbar picker", async ({
     page,
   }) => {

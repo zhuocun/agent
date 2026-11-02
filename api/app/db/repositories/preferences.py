@@ -17,9 +17,11 @@ The defaults live in this module as `_DEFAULTS` (mirrored in
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Preferences
@@ -167,14 +169,95 @@ def isoformat_utc(value: datetime) -> str:
     return text
 
 
-async def upsert(db: AsyncSession, user_id: UUID, prefs: UserPreferences) -> datetime:
+class PreferencesConflictError(Exception):
+    """A versioned preferences write matched no row.
+
+    Raised only when `expected_updated_at` is set and the UPDATE predicate
+    misses. The omitted-token path never raises this.
+    """
+
+
+def _preference_values(prefs: UserPreferences, now: datetime) -> dict[str, object]:
+    """Column values for a full preferences replace, including `updated_at`."""
+    return {
+        "default_tier_id": prefs.default_tier_id,
+        "temporary_by_default": prefs.temporary_by_default,
+        "training_opt_in": prefs.training_opt_in,
+        "send_on_enter": prefs.send_on_enter,
+        "auto_expand_reasoning": prefs.auto_expand_reasoning,
+        "telemetry_enabled": prefs.telemetry_enabled,
+        "custom_instructions": prefs.custom_instructions,
+        "retention_days": prefs.retention_days,
+        "monthly_budget_usd": prefs.monthly_budget_usd,
+        "per_conversation_budget_usd": prefs.per_conversation_budget_usd,
+        "memory_enabled": prefs.memory_enabled,
+        "keyboard_shortcuts": _shortcuts_to_db(prefs.keyboard_shortcuts),
+        "default_reasoning_effort_id": prefs.default_reasoning_effort_id,
+        "default_provider_id": prefs.default_provider_id,
+        "web_search_default": prefs.web_search_default,
+        "json_mode_default": prefs.json_mode_default,
+        "deep_research_default": prefs.deep_research_default,
+        "updated_at": now,
+    }
+
+
+async def _update_if_current(
+    db: AsyncSession,
+    user_id: UUID,
+    prefs: UserPreferences,
+    expected_updated_at: datetime,
+    now: datetime,
+) -> datetime:
+    """Replace the row only when `updated_at` is still `expected_updated_at`.
+
+    The predicate is on the UPDATE itself. A prior SELECT is not sufficient:
+    two transactions can both read the same instant and then both assign.
+    Zero affected rows means the token lost. Equivalent offsets match because
+    the token is compared as a UTC instant, the same rule as `same_instant`.
+    """
+    # Expire a loaded identity so a later flush cannot write this session's
+    # pre-update snapshot back over the conditional statement.
+    loaded = await db.get(Preferences, user_id)
+    if loaded is not None:
+        db.expire(loaded)
+    result = await db.execute(
+        update(Preferences)
+        .where(Preferences.user_id == user_id)
+        .where(Preferences.updated_at == _as_utc(expected_updated_at))
+        .values(**_preference_values(prefs, now)),
+        execution_options={"synchronize_session": False},
+    )
+    if cast(CursorResult[Any], result).rowcount != 1:
+        raise PreferencesConflictError
+    saved = await get_updated_at(db, user_id)
+    if saved is None:
+        raise PreferencesConflictError
+    return saved
+
+
+async def upsert(
+    db: AsyncSession,
+    user_id: UUID,
+    prefs: UserPreferences,
+    *,
+    expected_updated_at: datetime | None = None,
+) -> datetime:
     """Insert or update the preferences row for `user_id`.
 
     Cross-dialect upsert via select-then-update-or-insert (matches the votes
     repo pattern; see `votes.upsert` for the rationale). Returns the new
     `updated_at` instant (aware UTC).
+
+    When `expected_updated_at` is set, the write is a single UPDATE whose
+    predicate matches that instant. No row is inserted. Zero affected rows
+    raise `PreferencesConflictError` and leave the stored row untouched. Omission
+    keeps the unversioned replace.
     """
     now = datetime.now(UTC)
+    if expected_updated_at is not None:
+        return await _update_if_current(
+            db, user_id, prefs, expected_updated_at, now
+        )
     stmt = select(Preferences).where(Preferences.user_id == user_id)
     row = (await db.execute(stmt)).scalar_one_or_none()
     if row is None:

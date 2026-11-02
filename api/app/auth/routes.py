@@ -58,7 +58,9 @@ from app.security.passwords import (
     _truncate_for_bcrypt as _truncate_for_bcrypt_impl,
 )
 from app.security.passwords import (
+    dummy_bcrypt_verify,
     hash_password,
+    password_hash_scheme,
     verify_password,
 )
 
@@ -212,8 +214,8 @@ def _invalid_credentials() -> AppError:
     Returned identically whether the email is unknown, the account has no
     password set, or the password is wrong -- the title/body must not let a
     caller distinguish "no such account" from "wrong password" (no account
-    enumeration). The matching dummy-verify in the route closes the timing
-    side-channel for the unknown-email branch.
+    enumeration). Each failure path runs one argon2 verify and one cost-12
+    bcrypt verify so timing cannot separate them either.
     """
     return AppError(
         ErrorEnvelope(
@@ -383,8 +385,9 @@ async def login(
 
     Failures are a single uniform 401 (`INVALID_CREDENTIALS`) that never lets
     a caller distinguish "no such email" from "wrong password" / "no password
-    set" -- the message is identical across all three, and a dummy verify is
-    run when the user is missing to flatten the timing side-channel.
+    set" -- the message is identical across all three. Every failure runs one
+    argon2 verify and one cost-12 bcrypt verify. A real verify counts toward
+    that pair; a dummy fills only the scheme the real verify did not run.
     """
     normalized_email = body.email.strip().lower()
 
@@ -394,14 +397,23 @@ async def login(
     target = (await db.execute(stmt)).scalar_one_or_none()
 
     if target is None or target.password_hash is None:
-        # Spend a verify cycle so the unknown-email / no-password branches cost
-        # roughly the same as a real verify (timing-enumeration mitigation),
-        # then fail uniformly.
+        # No stored digest to check. Spend the argon2 dummy and one cost-12
+        # bcrypt dummy, then fail uniformly.
         verify_password(body.password, _DUMMY_PASSWORD_HASH)
+        dummy_bcrypt_verify(body.password)
         raise _invalid_credentials()
 
     ok, needs_rehash = verify_password(body.password, target.password_hash)
     if not ok:
+        scheme = password_hash_scheme(target.password_hash)
+        if scheme == "argon2":
+            dummy_bcrypt_verify(body.password)
+        elif scheme == "bcrypt":
+            verify_password(body.password, _DUMMY_PASSWORD_HASH)
+        else:
+            # `verify_password` did no hash work for an unknown digest.
+            verify_password(body.password, _DUMMY_PASSWORD_HASH)
+            dummy_bcrypt_verify(body.password)
         raise _invalid_credentials()
 
     if needs_rehash:

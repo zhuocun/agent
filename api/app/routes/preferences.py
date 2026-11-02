@@ -12,6 +12,8 @@ hit (see `app.routes.bootstrap`).
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +28,23 @@ from app.safety import SafetyDecision, check_user_turn
 from app.schemas.preferences import UserPreferences, UserPreferencesRequest
 
 router = APIRouter(prefix="/api", tags=["preferences"])
+
+
+def _stale_preferences(current: datetime | None) -> AppError:
+    return AppError(
+        ErrorEnvelope(
+            code="PREFERENCES_STALE",
+            severity="error",
+            title="Preferences are out of date",
+            body="Reload preferences and try the change again.",
+            meta={
+                "updatedAt": (
+                    None if current is None else preferences_repo.isoformat_utc(current)
+                ),
+            },
+        ),
+        status.HTTP_409_CONFLICT,
+    )
 
 
 def _safety_blocked(decision: SafetyDecision) -> AppError:
@@ -131,24 +150,20 @@ async def put_preferences(
     if body.base_updated_at is not None:
         current = await preferences_repo.get_updated_at(db, user.id)
         if current is None or not preferences_repo.same_instant(current, body.base_updated_at):
-            raise AppError(
-                ErrorEnvelope(
-                    code="PREFERENCES_STALE",
-                    severity="error",
-                    title="Preferences are out of date",
-                    body="Reload preferences and try the change again.",
-                    meta={
-                        "updatedAt": (
-                            None
-                            if current is None
-                            else preferences_repo.isoformat_utc(current)
-                        ),
-                    },
-                ),
-                status.HTTP_409_CONFLICT,
-            )
+            raise _stale_preferences(current)
 
-    saved_at = await preferences_repo.upsert(db, user.id, merged)
+    try:
+        # The token, when present, is enforced again inside the UPDATE
+        # predicate. The SELECT above can pass for two overlapping requests.
+        saved_at = await preferences_repo.upsert(
+            db,
+            user.id,
+            merged,
+            expected_updated_at=body.base_updated_at,
+        )
+    except preferences_repo.PreferencesConflictError:
+        current = await preferences_repo.get_updated_at(db, user.id)
+        raise _stale_preferences(current) from None
     response.headers["X-Preferences-Updated-At"] = preferences_repo.isoformat_utc(saved_at)
     # Opportunistic purge with the newly-saved global window. Honors any
     # per-conversation `retention_days` override too (D31), so lowering the

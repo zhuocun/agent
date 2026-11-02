@@ -42,6 +42,7 @@ import anyio
 import jsonschema
 import structlog
 from fastapi import Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm.util import identity_key
 from sse_starlette import ServerSentEvent
@@ -185,24 +186,38 @@ def _identity_map_attempt_status(
     return None
 
 
-def _uncommitted_analytics_payloads(
+async def _uncommitted_analytics_payloads(
     session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
 ) -> list[dict[str, Any]]:
-    """Copy analytics inserts that this transaction flushed but did not commit."""
+    """Copy analytics inserts that this transaction flushed but did not commit.
+
+    ``flush`` drops the object from ``session.new``, and nothing else keeps
+    the instance, so the identity map can already have released it. ``record``
+    stashes the id on the session. A second connection does not see an
+    uncommitted insert, which is how those ids are chosen.
+    """
+    raw_ids = session.info.get("uncommitted_analytics_ids") or []
+    ids = [event_id for event_id in raw_ids if event_id is not None]
+    if not ids:
+        return []
+    async with session_factory() as other:
+        committed = set(
+            (
+                await other.execute(
+                    select(AnalyticsEvent.id).where(AnalyticsEvent.id.in_(ids))
+                )
+            )
+            .scalars()
+            .all()
+        )
     payloads: list[dict[str, Any]] = []
-    seen: set[int] = set()
-    candidates: list[object] = list(session.new)
-    transaction = session.get_transaction()
-    new_states = getattr(transaction, "_new", None) if transaction is not None else None
-    if new_states:
-        for state in list(new_states):
-            obj = state.obj()
-            if obj is not None:
-                candidates.append(obj)
-    for obj in candidates:
-        if not isinstance(obj, AnalyticsEvent) or id(obj) in seen:
+    for event_id in ids:
+        if event_id in committed:
             continue
-        seen.add(id(obj))
+        obj = await session.get(AnalyticsEvent, event_id)
+        if obj is None:
+            continue
         properties = obj.properties
         payloads.append(
             {
@@ -263,7 +278,10 @@ async def discard_unfilled_assistant_attempt(
                 await request_session.commit()
             else:
                 if preserve_telemetry:
-                    telemetry = _uncommitted_analytics_payloads(request_session)
+                    telemetry = await _uncommitted_analytics_payloads(
+                        request_session,
+                        session_factory,
+                    )
                 await request_session.rollback()
         except Exception as exc:
             log.warning(

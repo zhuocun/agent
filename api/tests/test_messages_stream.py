@@ -2038,6 +2038,17 @@ async def test_regenerate_provider_error_drops_null_attempt_and_retries_client_i
         ).scalars().all()
         assert not any(row.status is None for row in assistants)
         assert assistants == []
+        from app.db.models import AnalyticsEvent
+
+        regenerated = (
+            await session.execute(
+                select(AnalyticsEvent).where(
+                    AnalyticsEvent.user_id == user_id,
+                    AnalyticsEvent.event_type == "message.regenerated",
+                )
+            )
+        ).scalars().all()
+        assert len(regenerated) == 1
 
     listed = await client.get(f"/api/conversations/{conv_id}")
     assert listed.status_code == 200

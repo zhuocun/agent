@@ -5,11 +5,10 @@
 
 import { expect, test, type Page } from "./coverage-fixture";
 
-import { modelModeTrigger, waitForBootstrap } from "./helpers";
+import { toolsTrigger, waitForBootstrap } from "./helpers";
 
 async function enableWebSearch(page: Page): Promise<void> {
-  await modelModeTrigger(page).click();
-  await page.getByTestId("picker-advanced").click();
+  await toolsTrigger(page).click();
   const toggle = page.getByTestId("web-search-toggle");
   await expect(toggle).toBeVisible({ timeout: 5_000 });
   await toggle.click();

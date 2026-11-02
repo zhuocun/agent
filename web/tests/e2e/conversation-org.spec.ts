@@ -165,6 +165,7 @@ test.describe("conversation org v2", () => {
 
     // Enter selection mode via the explicit "Select" toggle — only then do the
     // per-row checkboxes render.
+    await page.getByRole("button", { name: "Account menu" }).click();
     await page.getByTestId("sidebar-select-toggle").click();
     const row1 = page.locator(`[data-conversation-id="${c1}"]`);
     const row2 = page.locator(`[data-conversation-id="${c2}"]`);
@@ -199,6 +200,7 @@ test.describe("conversation org v2", () => {
     ).toBeVisible();
 
     // --- Bulk delete (re-select inside the Archived section) -----------------
+    await page.getByRole("button", { name: "Account menu" }).click();
     await page.getByTestId("sidebar-select-toggle").click();
     await archivedSection
       .locator(`[data-conversation-id="${c1}"]`)

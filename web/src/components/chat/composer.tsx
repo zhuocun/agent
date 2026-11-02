@@ -109,12 +109,15 @@ interface ComposerProps {
   // write). Used for temporary "off the record" chats, which must not leave a
   // draft behind in IndexedDB. Defaults to true.
   persistDrafts?: boolean;
-  // The model/mode picker, rendered inside the composer toolbar (Lovable-style
-  // "model" dropdown next to the "+" disclosure). Passed as a slot — the parent
-  // owns the picker's state wiring — so the composer stays decoupled from the
-  // tier/provider/effort prop surface. Absent ⇒ the slot simply doesn't render
+  // The model picker, rendered inside the composer toolbar. Passed as a slot
+  // — the parent owns the picker's state — so the composer stays decoupled
+  // from the tier prop surface. Absent ⇒ the slot simply doesn't render
   // (e.g. share view embeds).
   modelPicker?: ReactNode;
+  // Persistent tools and generation settings (web search, deep research, JSON,
+  // provider, reasoning effort, data policy). A separate slot from More
+  // actions: those rows fire once on the draft, these stay on across turns.
+  toolsPicker?: ReactNode;
   // True on the first-run welcome surface: the card wears the resting
   // hero-glow halo (Decision 16). The glow fades out on focus so the activated
   // focus glow stays the single moment of full accent illumination.
@@ -283,6 +286,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       draftKey = null,
       persistDrafts = true,
       modelPicker,
+      toolsPicker,
       heroGlow = false,
     },
     forwardedRef,
@@ -1337,12 +1341,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
             aria-activedescendant={comboboxActiveOptionId}
             className="block max-h-[12.5rem] min-h-11 w-full resize-none bg-transparent px-2 py-2 text-[1.0625rem] leading-7 text-foreground outline-none placeholder:text-muted-foreground md:text-[0.9375rem]"
           />
-          {/* Toolbar row beneath the textarea: the "+" disclosure and the
-            model/mode picker sit left; Send/Stop sits right. Attach, camera,
-            templates, and dictation live only inside the "+" disclosure, so
-            the toolbar does not repeat them. The disclosure expands with a
-            zoom/fade; motion-reduce makes the open instant. At 200% text the
-            row wraps (WCAG 1.4.4). */}
+          {/* Toolbar row beneath the textarea: "+" (one-shot draft actions),
+            Tools (persistent modes and generation settings), and the model
+            picker sit left; Send/Stop sits right. At 200% text the row wraps
+            (WCAG 1.4.4). */}
           <div className="flex min-w-0 flex-wrap items-center gap-1 [@media(hover:none)]:gap-2">
             {(() => {
                 const moreActionsTrigger = (
@@ -1409,11 +1411,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
                   </Popover>
                 );
               })()}
-            {/* Model/mode picker — the same component the header used to host
-              (every testid/aria contract intact), now sitting in the toolbar
-              like a Lovable-style model dropdown. A zero basis with a 6rem
-              floor makes the row wrap only when even 6rem cannot fit (200%
-              text); otherwise a long label truncates on one row. */}
+            {toolsPicker ? (
+              <div className="flex shrink-0 items-center">{toolsPicker}</div>
+            ) : null}
+            {/* Model picker. A zero basis with a 6rem floor makes the row wrap
+              only when even 6rem cannot fit (200% text); otherwise a long
+              label truncates on one row. */}
             {modelPicker ? (
               <div className="flex min-w-[6rem] flex-1 basis-0 items-center">
                 {modelPicker}

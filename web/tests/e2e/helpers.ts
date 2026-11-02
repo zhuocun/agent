@@ -156,6 +156,11 @@ export function modelModeTrigger(page: Page | { locator: Page["locator"] }): Loc
   return page.locator('[data-testid="model-mode-trigger"]:visible');
 }
 
+/** Desktop dropdown + mobile sheet each render a Tools trigger; only one is visible. */
+export function toolsTrigger(page: Page | { locator: Page["locator"] }): Locator {
+  return page.locator('[data-testid="composer-tools"]:visible');
+}
+
 /**
  * Wait for the FE shell to finish bootstrapping. The chat thread fetches
  * /api/bootstrap on mount and renders an aria-hidden div until the response

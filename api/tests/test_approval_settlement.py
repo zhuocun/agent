@@ -12,6 +12,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 import pytest
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -1811,6 +1812,97 @@ async def test_cancelled_winner_settles_its_own_claim_and_loser_fails_closed(
 
     assert exec_count["n"] == 1
     assert replay.status == "cancelled"
+
+
+async def test_cancel_during_post_execute_settle_persists_the_execution(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancel inside the post-execute settle writes that result, then re-raises.
+
+    The claim has already committed. The cancel lands on the next aiosqlite
+    ``Connection._execute`` — the settle's own session IO, not a hang on a clean
+    session — so SQLAlchemy invalidates the connection. The handler must roll
+    that session back and store the execution under the minted claim. A later
+    approve replays the one durable tool result and does not run the tool again.
+    """
+    tool_call_id = "cal_settle_cancel"
+    msg = await _seed_paused_message(
+        session_factory, parts=_pending_calendar_parts(tool_call_id=tool_call_id)
+    )
+
+    exec_count = {"n": 0}
+    original = TOOL_REGISTRY["calendar_create_event"]
+    real = original.executor
+
+    async def _counting(call: ToolCallRequest) -> ToolExecutionResult:
+        exec_count["n"] += 1
+        return await real(call)
+
+    monkeypatch.setitem(
+        TOOL_REGISTRY,
+        "calendar_create_event",
+        ToolSpec(
+            name=original.name,
+            label=original.label,
+            needs_approval=True,
+            schema=original.schema,
+            executor=_counting,
+            prod_safe=original.prod_safe,
+        ),
+    )
+
+    real_execute = aiosqlite.Connection._execute
+    in_settle_execute = asyncio.Event()
+    blocked = {"done": False}
+
+    async def _block_first_settle_execute(self: Any, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        # The claim's executes run before the tool. The first execute after the
+        # tool returns is the settle (``_lock_message`` / ``_cas_persist_parts``).
+        if exec_count["n"] >= 1 and not blocked["done"]:
+            blocked["done"] = True
+            in_settle_execute.set()
+            await asyncio.Event().wait()
+        return await real_execute(self, fn, *args, **kwargs)
+
+    monkeypatch.setattr(
+        aiosqlite.Connection, "_execute", _block_first_settle_execute
+    )
+
+    winner = asyncio.create_task(
+        _approve_from(
+            session_factory,
+            message_id=msg.id,
+            tool_call_id=tool_call_id,
+            claim_id="claim-settle-cancel",
+        )
+    )
+    await asyncio.wait_for(in_settle_execute.wait(), timeout=5.0)
+    assert exec_count["n"] == 1
+    winner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await winner
+
+    settled = await _durable_tool_result(session_factory, msg.id, tool_call_id)
+    assert settled is not None
+    assert settled.get("status") == "succeeded"
+    output = settled.get("output")
+    assert isinstance(output, dict)
+    assert output.get("eventId") == f"evt_{tool_call_id}"
+    assert output.get("title") == "Planning review"
+    assert isinstance(output.get("startsAt"), str) and output["startsAt"]
+    _version, parts = await _durable_snapshot(session_factory, msg.id)
+    assert len(_durable_tool_results(parts, tool_call_id)) == 1
+
+    replay = await _approve_from(
+        session_factory,
+        message_id=msg.id,
+        tool_call_id=tool_call_id,
+        claim_id="claim-settle-replay",
+    )
+    assert exec_count["n"] == 1
+    assert replay.status == "succeeded"
+    assert replay.output == settled["output"]
 
 
 async def test_claim_cas_loss_rereads_and_never_settles_for_the_winner(

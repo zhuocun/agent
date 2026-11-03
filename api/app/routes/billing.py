@@ -338,6 +338,29 @@ def _object_id(value: Any) -> str | None:
     return None
 
 
+def _subscription_current_period_end(obj: dict[str, Any]) -> Any:
+    """Return the subscription period end, including basil item periods.
+
+    Stripe API 2025-05-28.basil omits top-level ``current_period_end``. The
+    period is ``items.data[].current_period_end``. Checkout sells one Pro
+    price, so the first item is that period. A present top-level value still
+    wins so an older webhook payload grants Pro.
+    """
+    top_level = obj.get("current_period_end")
+    if top_level is not None:
+        return top_level
+    items = obj.get("items")
+    if not isinstance(items, dict):
+        return None
+    data = items.get("data")
+    if not isinstance(data, list) or not data:
+        return None
+    first = data[0]
+    if not isinstance(first, dict):
+        return None
+    return first.get("current_period_end")
+
+
 def _timestamp_to_datetime(value: Any) -> datetime | None:
     if isinstance(value, bool):
         return None
@@ -470,7 +493,7 @@ async def _handle_subscription_event(
         subscription_id=subscription_id,
         status=sub_status,
         customer_id=_object_id(obj.get("customer")),
-        current_period_end=_timestamp_to_datetime(obj.get("current_period_end")),
+        current_period_end=_timestamp_to_datetime(_subscription_current_period_end(obj)),
         event_created_at=event_created_at,
     )
 
@@ -562,4 +585,10 @@ async def billing_webhook(
             event_created_at=event_created_at,
             obj=cast(dict[str, Any], obj),
         )
+    # Commit the event row and any grant or entitlement before the response.
+    # FastAPI commits the dependency session only after it sends the body, and
+    # Stripe treats 200 as final. A commit failure propagates so the response
+    # is 5xx and Stripe retries. A duplicate delivery inserts nothing and
+    # returns above, without this commit.
+    await db.commit()
     return BillingWebhookResponse(received=True, processed=True)

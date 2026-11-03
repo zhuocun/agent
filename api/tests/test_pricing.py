@@ -14,14 +14,21 @@ Two required tests (per M1 spec):
 from __future__ import annotations
 
 import json
+from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
 from pydantic import ValidationError
 
+from app.db.repositories.usage import _round_usd
 from app.providers.pricing import build_attribution, compute_cost_breakdown
 from app.providers.protocol import UsageUpdate
 from app.providers.tiers import TierBinding, get_binding
 from app.schemas.message import AppliedTier, LongContext, SessionMultiplier
+
+
+def _six_place_usd(amount: Decimal) -> float:
+    """Half-up at six decimal places, matching `compute_cost_breakdown`."""
+    return float(amount.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP))
 
 
 def test_reasoning_tokens_bill_at_output_rate() -> None:
@@ -99,6 +106,33 @@ def test_long_context_flat_forbids_applied_tier_and_session_multiplier() -> None
     assert lc2.session_multiplier is None
 
 
+def test_fast_tier_125_input_tokens_round_half_up_at_six_places() -> None:
+    """125 fast-tier input tokens at $0.14 / 1M is exactly $0.0000175.
+
+    Six-place half-up is $0.000018. Binary float division stores a value
+    that `round(..., 6)` turns into $0.000017, so this assertion fails if
+    the subtotal is still computed in binary floats.
+    """
+    binding = get_binding("fast")
+    assert binding is not None
+    assert binding.list_price_in_per_m == 0.14
+
+    bd = compute_cost_breakdown(
+        usage=UsageUpdate(
+            input_tokens=125,
+            output_tokens=0,
+            reasoning_tokens=0,
+            cached_input_tokens=0,
+        ),
+        binding=binding,
+    )
+
+    assert bd.subtotal_usd == 0.000018
+    assert round(bd.subtotal_usd, 6) == 0.000018
+    assert _round_usd(bd.subtotal_usd) == 0.000018
+    assert bd.session_surcharge_usd == 0.0
+
+
 def test_compute_cost_breakdown_includes_all_token_buckets() -> None:
     binding = get_binding("smart")
     assert binding is not None
@@ -118,13 +152,13 @@ def test_compute_cost_breakdown_includes_all_token_buckets() -> None:
     assert cache_per_m is not None  # M4: smart tier sets cache_read_per_m.
     in_per_m = binding.list_price_in_per_m
     out_per_m = binding.list_price_out_per_m
-    expected = (
-        2000 * in_per_m / 1_000_000
-        + 1000 * out_per_m / 1_000_000
-        + 100 * out_per_m / 1_000_000
-        + 500 * cache_per_m / 1_000_000
+    expected = _six_place_usd(
+        Decimal(2000) * Decimal(str(in_per_m)) / Decimal(1_000_000)
+        + Decimal(1000) * Decimal(str(out_per_m)) / Decimal(1_000_000)
+        + Decimal(100) * Decimal(str(out_per_m)) / Decimal(1_000_000)
+        + Decimal(500) * Decimal(str(cache_per_m)) / Decimal(1_000_000)
     )
-    assert bd.subtotal_usd == pytest.approx(expected, rel=1e-9)
+    assert bd.subtotal_usd == expected
     assert bd.long_context.flat is True
 
 
@@ -145,12 +179,16 @@ def test_cache_read_uses_cache_read_per_m_when_set() -> None:
     usage = UsageUpdate(input_tokens=1000, cached_input_tokens=500)
     bd = compute_cost_breakdown(usage=usage, binding=binding)
 
-    expected = (
-        1000 * binding.list_price_in_per_m + 500 * cache_per_m
-    ) / 1_000_000
+    expected = _six_place_usd(
+        (
+            Decimal(1000) * Decimal(str(binding.list_price_in_per_m))
+            + Decimal(500) * Decimal(str(cache_per_m))
+        )
+        / Decimal(1_000_000)
+    )
     naive_wrong = 1500 * binding.list_price_in_per_m / 1_000_000
 
-    assert bd.subtotal_usd == pytest.approx(expected, rel=1e-9)
+    assert bd.subtotal_usd == expected
     # Sanity: the M1 "model both at input rate" path would have produced
     # `naive_wrong`. Confirm we're not silently regressing.
     assert bd.subtotal_usd != pytest.approx(naive_wrong, rel=1e-9)

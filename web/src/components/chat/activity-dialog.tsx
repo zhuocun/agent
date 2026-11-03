@@ -99,6 +99,8 @@ export function ActivityBody({
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A failed "load more" must not reuse `error`: that branch replaces the list.
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
 
   // Load the first page + rollup whenever the dialog opens. Every setState here
   // runs only AFTER an await, mirroring the bootstrap effect — nothing fires
@@ -136,6 +138,7 @@ export function ActivityBody({
     const oldest = events[events.length - 1];
     if (!oldest || loadingMore) return;
     setLoadingMore(true);
+    setLoadMoreError(null);
     try {
       // Composite keyset cursor `<createdAt>|<id>` — required so a group of
       // events sharing a createdAt (same-request emits / second-resolution
@@ -147,7 +150,7 @@ export function ActivityBody({
       setEvents((prev) => [...prev, ...next]);
       setHasMore(next.length === PAGE_SIZE);
     } catch {
-      setError("Couldn't load more activity. Please try again.");
+      setLoadMoreError("Couldn't load more activity. Please try again.");
     } finally {
       setLoadingMore(false);
     }
@@ -268,6 +271,9 @@ export function ActivityBody({
                     </li>
                   ))}
                 </ul>
+                {loadMoreError ? (
+                  <Alert variant="inline">{loadMoreError}</Alert>
+                ) : null}
                 {hasMore ? (
                   <Button
                     type="button"

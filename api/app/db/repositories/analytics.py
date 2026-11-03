@@ -73,6 +73,8 @@ async def record(
     db.add(row)
     await db.flush()
     await db.refresh(row)
+    pending = db.info.setdefault("uncommitted_analytics_ids", [])
+    pending.append(row.id)
     return row
 
 
@@ -97,6 +99,8 @@ async def record_once_per_user(
             await db.flush()
     except IntegrityError:
         return None
+    pending = db.info.setdefault("uncommitted_analytics_ids", [])
+    pending.append(row.id)
     return row
 
 

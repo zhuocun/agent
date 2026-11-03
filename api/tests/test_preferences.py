@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -21,6 +22,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Conversation, Preferences, User
+from app.db.repositories import preferences as preferences_repo
+from app.schemas.preferences import UserPreferences
 
 pytestmark = pytest.mark.asyncio
 
@@ -660,6 +663,125 @@ async def test_stale_preferences_put_without_row_does_not_insert(
     assert error["code"] == "PREFERENCES_STALE"
     assert error["meta"]["updatedAt"] is None
     assert await _row_count(session_factory) == 0
+
+
+async def test_overlapping_preferences_puts_keep_first_retention(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two PUTs that both read the same instant cannot both commit.
+
+    The request that keeps retentionDays null commits first. The request that
+    sets retentionDays to 30 commits second. The second write must be a 409,
+    the null retention must remain, and a chat older than 30 days must remain.
+    """
+    boot = await client.get("/api/bootstrap")
+    assert boot.status_code == 200
+
+    async with session_factory() as session:
+        user = (await session.execute(select(User))).scalar_one()
+        session.add(
+            Preferences(
+                user_id=user.id,
+                default_tier_id="smart",
+                retention_days=None,
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+        )
+        session.add(
+            Conversation(
+                user_id=user.id,
+                title="old chat",
+                selected_tier_id="smart",
+                pinned=False,
+                updated_at=datetime.now(UTC) - timedelta(days=45),
+            )
+        )
+        await session.commit()
+        user_id = user.id
+
+    async with session_factory() as session:
+        stored_at = (
+            await session.execute(
+                select(Preferences.updated_at).where(Preferences.user_id == user_id)
+            )
+        ).scalar_one()
+    if stored_at.tzinfo is None:
+        stored_at = stored_at.replace(tzinfo=UTC)
+    base = stored_at.isoformat()
+
+    both_read = asyncio.Event()
+    allow_null = asyncio.Event()
+    allow_thirty = asyncio.Event()
+    reads = 0
+    real_get_updated_at = preferences_repo.get_updated_at
+    real_upsert = preferences_repo.upsert
+
+    async def gated_get_updated_at(
+        db: AsyncSession, gated_user_id: UUID
+    ) -> datetime | None:
+        nonlocal reads
+        value = await real_get_updated_at(db, gated_user_id)
+        reads += 1
+        if reads == 2:
+            both_read.set()
+        await both_read.wait()
+        return value
+
+    async def gated_upsert(
+        db: AsyncSession,
+        gated_user_id: UUID,
+        prefs: UserPreferences,
+        *,
+        expected_updated_at: datetime | None = None,
+    ) -> datetime:
+        if prefs.retention_days == 30:
+            await allow_thirty.wait()
+        else:
+            await allow_null.wait()
+        return await real_upsert(
+            db,
+            gated_user_id,
+            prefs,
+            expected_updated_at=expected_updated_at,
+        )
+
+    monkeypatch.setattr(preferences_repo, "get_updated_at", gated_get_updated_at)
+    monkeypatch.setattr(preferences_repo, "upsert", gated_upsert)
+
+    task_null = asyncio.create_task(
+        client.put(
+            "/api/preferences",
+            json=_prefs_body(retentionDays=None, baseUpdatedAt=base),
+        )
+    )
+    task_thirty = asyncio.create_task(
+        client.put(
+            "/api/preferences",
+            json=_prefs_body(retentionDays=30, baseUpdatedAt=base),
+        )
+    )
+    await asyncio.wait_for(both_read.wait(), timeout=5)
+    allow_null.set()
+    kept = await asyncio.wait_for(task_null, timeout=5)
+    allow_thirty.set()
+    stale = await asyncio.wait_for(task_thirty, timeout=5)
+
+    assert kept.status_code == 204
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "PREFERENCES_STALE"
+    assert (
+        stale.json()["error"]["meta"]["updatedAt"]
+        == kept.headers["x-preferences-updated-at"]
+    )
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(Preferences).where(Preferences.user_id == user_id))
+        ).scalar_one()
+        assert row.retention_days is None
+        assert (await session.execute(select(Conversation.id))).scalar_one_or_none() is not None
 
 
 async def test_preferences_base_updated_at_matches_equivalent_instant(

@@ -58,6 +58,20 @@ function absoluteShareUrl(sharePath: string): string {
   return new URL(sharePath, window.location.origin).toString();
 }
 
+// Link plus the conversation it was minted for. `conversationId` stays in this
+// object even when `url` is null so an in-flight create can tell a conversation
+// change from "no link yet".
+interface ShareSession {
+  // `open` is mirrored so a response that lands after close cannot restore a
+  // link the close path just cleared.
+  open: boolean;
+  conversationId: string | null;
+  url: string | null;
+  status: string | null;
+  copied: boolean;
+  error: string | null;
+}
+
 // Share-management dialog (PRD 07 §6.4). Two states inside one surface:
 //   - "create": a single button mints the link (idempotent on the BE).
 //   - "ready": the absolute URL in a read-only field + Copy, with Remove link
@@ -73,14 +87,43 @@ export function ShareDialog({
   const urlFieldId = useId();
   const errorId = useId();
 
-  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  // The minted URL is stored with the conversation id captured when Create
+  // started. `conversationId` on this object is the id the link belongs to,
+  // kept in state so a late response can see a newer id without reading a ref
+  // during render. New chat can null the prop while this dialog stays open.
+  const [session, setSession] = useState<ShareSession>(() => ({
+    open,
+    conversationId,
+    url: null,
+    status: null,
+    copied: false,
+    error: null,
+  }));
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  // Transient "Copied" / revoke confirmation timers; cleared on close so a
-  // stale timeout can't flip state after the dialog is gone.
+  // Transient "Copied" timer; cleared on close so a stale timeout can't flip
+  // state after the dialog is gone.
   const copiedTimerRef = useRef<number | null>(null);
+
+  // Drop a link (and its copy/error status) when the dialog closes or the
+  // targeted conversation changes. Conditional setState during render is the
+  // documented way to reset on a prop change; an effect would trip
+  // react-hooks/set-state-in-effect.
+  if (session.open !== open || session.conversationId !== conversationId) {
+    setSession({
+      open,
+      conversationId,
+      url: null,
+      status: null,
+      copied: false,
+      error: null,
+    });
+  }
+
+  // Hide Copy / Remove unless the stored link is still for this conversation.
+  // The render-time reset above clears it on the next pass; this also covers
+  // the pass that notices the prop change.
+  const shareUrl =
+    session.conversationId === conversationId ? session.url : null;
 
   // Reset transient state on close so a re-open starts clean. Driven from the
   // close path rather than an effect to avoid an open→render→reset cascade
@@ -91,48 +134,85 @@ export function ShareDialog({
         window.clearTimeout(copiedTimerRef.current);
         copiedTimerRef.current = null;
       }
-      setShareUrl(null);
       setPending(false);
-      setError(null);
-      setCopied(false);
-      setStatus(null);
+      setSession((current) => ({
+        open: false,
+        conversationId: current.conversationId,
+        url: null,
+        status: null,
+        copied: false,
+        error: null,
+      }));
     }
     onOpenChange(next);
   };
 
   const handleCreate = async () => {
-    if (pending || !conversationId) return;
+    if (pending || conversationId === null) return;
+    const targetId = conversationId;
     setPending(true);
-    setError(null);
-    setStatus(null);
+    setSession((current) =>
+      current.open && current.conversationId === targetId
+        ? { ...current, error: null, status: null }
+        : current,
+    );
     try {
-      const result = await createShareLink(conversationId);
-      setShareUrl(absoluteShareUrl(result.sharePath));
-      setStatus("Share link created");
+      const result = await createShareLink(targetId);
+      const url = absoluteShareUrl(result.sharePath);
+      // A new chat (or any other selection) may have changed the prop while
+      // this request was in flight. Apply the URL only if this id is still
+      // the one the dialog is bound to; otherwise leave the reset in place.
+      setSession((current) =>
+        current.open && current.conversationId === targetId
+          ? { ...current, url, status: "Share link created", error: null }
+          : current,
+      );
     } catch (cause) {
-      setError(messageForError(cause));
+      const message = messageForError(cause);
+      setSession((current) =>
+        current.open && current.conversationId === targetId
+          ? { ...current, error: message }
+          : current,
+      );
     } finally {
       setPending(false);
     }
   };
 
   const handleRevoke = async () => {
-    if (pending || !conversationId) return;
+    if (pending || conversationId === null) return;
+    const targetId = conversationId;
     setPending(true);
-    setError(null);
-    setStatus(null);
+    setSession((current) =>
+      current.open && current.conversationId === targetId
+        ? { ...current, error: null, status: null }
+        : current,
+    );
     try {
       // Any 2xx (the BE returns 204) means the conversation is now unshared.
-      await deleteShareLink(conversationId);
+      await deleteShareLink(targetId);
       if (copiedTimerRef.current !== null) {
         window.clearTimeout(copiedTimerRef.current);
         copiedTimerRef.current = null;
       }
-      setShareUrl(null);
-      setCopied(false);
-      setStatus("Link removed");
+      setSession((current) =>
+        current.open && current.conversationId === targetId
+          ? {
+              ...current,
+              url: null,
+              copied: false,
+              status: "Link removed",
+              error: null,
+            }
+          : current,
+      );
     } catch (cause) {
-      setError(messageForError(cause));
+      const message = messageForError(cause);
+      setSession((current) =>
+        current.open && current.conversationId === targetId
+          ? { ...current, error: message }
+          : current,
+      );
     } finally {
       setPending(false);
     }
@@ -141,14 +221,17 @@ export function ShareDialog({
   const handleCopy = async () => {
     if (!shareUrl) return;
     const confirmCopied = () => {
-      setCopied(true);
-      setStatus("Link copied");
+      setSession((current) =>
+        current.url === null
+          ? current
+          : { ...current, copied: true, status: "Link copied" },
+      );
       if (copiedTimerRef.current !== null) {
         window.clearTimeout(copiedTimerRef.current);
       }
       copiedTimerRef.current = window.setTimeout(() => {
         copiedTimerRef.current = null;
-        setCopied(false);
+        setSession((current) => ({ ...current, copied: false }));
       }, 2000);
     };
 
@@ -170,7 +253,11 @@ export function ShareDialog({
         field.focus();
         field.select();
       }
-      setStatus("Press Ctrl/Cmd+C to copy the link.");
+      setSession((current) =>
+        current.url === null
+          ? current
+          : { ...current, status: "Press Ctrl/Cmd+C to copy the link." },
+      );
     }
   };
 
@@ -215,7 +302,7 @@ export function ShareDialog({
                     onClick={handleCopy}
                     className="h-9 shrink-0 rounded-full px-3 [@media(hover:none)]:h-11"
                   >
-                    {copied ? (
+                    {session.copied ? (
                       <>
                         <Check aria-hidden className="size-4" />
                         <span>Copied</span>
@@ -234,7 +321,7 @@ export function ShareDialog({
                 type="button"
                 variant="ghost"
                 onClick={handleRevoke}
-                disabled={pending}
+                disabled={pending || conversationId === null}
                 className="-ml-2 rounded-full text-muted-foreground hover:text-foreground"
               >
                 {pending ? "Removing link..." : "Remove link"}
@@ -244,7 +331,7 @@ export function ShareDialog({
             <Button
               type="button"
               onClick={handleCreate}
-              disabled={pending}
+              disabled={pending || conversationId === null}
               className="h-11 w-full rounded-full"
             >
               <Link2 aria-hidden className="size-4" />
@@ -252,16 +339,16 @@ export function ShareDialog({
             </Button>
           )}
 
-          {error ? (
+          {session.error ? (
             <p id={errorId} role="alert" className="ui-body text-destructive-text">
-              {error}
+              {session.error}
             </p>
           ) : null}
 
           {/* Status line for AT: announces copy / create / revoke without
               stealing focus. role="status" is an implicit aria-live=polite. */}
           <p role="status" className="sr-only">
-            {status}
+            {session.status}
           </p>
         </div>
       </DialogContent>

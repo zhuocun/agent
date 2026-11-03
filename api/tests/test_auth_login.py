@@ -25,12 +25,14 @@ from uuid import UUID
 
 import bcrypt
 import pytest
+from argon2 import PasswordHasher
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import Conversation, User
 from app.db.models import Session as DbSession
+from app.security import passwords
 from app.security.passwords import hash_password
 
 pytestmark = pytest.mark.asyncio
@@ -301,6 +303,116 @@ async def test_login_unknown_email_matches_wrong_password_envelope(
     )
     assert wrong_pw.status_code == unknown.status_code == 401
     assert _error(wrong_pw.json()) == _error(unknown.json())
+
+
+class _VerifyCounts:
+    def __init__(self) -> None:
+        self.argon2 = 0
+        self.bcrypt: list[bytes] = []
+
+
+class _CountingHasher:
+    """Stand-in for `passwords._PH` that counts `verify` calls."""
+
+    def __init__(self, inner: PasswordHasher, counts: _VerifyCounts) -> None:
+        self._inner = inner
+        self._counts = counts
+
+    def verify(self, hashed: str, password: str) -> bool:
+        self._counts.argon2 += 1
+        return self._inner.verify(hashed, password)
+
+    def hash(self, password: str) -> str:
+        return self._inner.hash(password)
+
+    def check_needs_rehash(self, hashed: str) -> bool:
+        return self._inner.check_needs_rehash(hashed)
+
+
+@pytest.fixture
+def verify_counts(monkeypatch: pytest.MonkeyPatch) -> _VerifyCounts:
+    """Count argon2 verifies and bcrypt checks performed during login."""
+    counts = _VerifyCounts()
+    real_checkpw = passwords.bcrypt.checkpw
+
+    def spy_checkpw(password: bytes, hashed: bytes) -> bool:
+        counts.bcrypt.append(hashed)
+        return real_checkpw(password, hashed)
+
+    monkeypatch.setattr(passwords, "_PH", _CountingHasher(passwords._PH, counts))
+    monkeypatch.setattr(passwords.bcrypt, "checkpw", spy_checkpw)
+    return counts
+
+
+def _assert_bcrypt_cost_12(hashed: bytes) -> None:
+    assert hashed.decode("ascii").split("$")[2] == "12"
+
+
+async def test_login_unknown_email_runs_one_argon2_and_one_bcrypt12(
+    client: AsyncClient,
+    verify_counts: _VerifyCounts,
+) -> None:
+    """Unknown email spends one argon2 dummy and one cost-12 bcrypt dummy."""
+    await client.get("/api/bootstrap")
+    response = await client.post(
+        "/api/auth/login",
+        json={"email": "nobody@example.com", "password": "whatever"},
+    )
+    assert response.status_code == 401
+    assert _error(response.json())["code"] == "INVALID_CREDENTIALS"
+    assert verify_counts.argon2 == 1
+    assert len(verify_counts.bcrypt) == 1
+    assert verify_counts.bcrypt[0] == passwords.DUMMY_BCRYPT_HASH
+    _assert_bcrypt_cost_12(passwords.DUMMY_BCRYPT_HASH)
+
+
+async def test_login_argon2_wrong_password_adds_one_bcrypt12(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    verify_counts: _VerifyCounts,
+) -> None:
+    """A wrong argon2 password counts as the argon2 verify, plus one bcrypt dummy."""
+    await _seed_registered_user(
+        session_factory,
+        email="argon@example.com",
+        password_hash=hash_password("correct"),
+    )
+    await client.get("/api/bootstrap")
+    response = await client.post(
+        "/api/auth/login",
+        json={"email": "argon@example.com", "password": "wrongpassword"},
+    )
+    assert response.status_code == 401
+    assert _error(response.json())["code"] == "INVALID_CREDENTIALS"
+    assert verify_counts.argon2 == 1
+    assert len(verify_counts.bcrypt) == 1
+    assert verify_counts.bcrypt[0] == passwords.DUMMY_BCRYPT_HASH
+    _assert_bcrypt_cost_12(verify_counts.bcrypt[0])
+
+
+async def test_login_bcrypt_wrong_password_adds_one_argon2_not_second_bcrypt(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    verify_counts: _VerifyCounts,
+) -> None:
+    """A wrong bcrypt password counts as the bcrypt verify, plus one argon2 dummy."""
+    legacy = _bcrypt_legacy_digest("legacy-pw")
+    await _seed_registered_user(
+        session_factory,
+        email="legacy-bad@example.com",
+        password_hash=legacy,
+    )
+    await client.get("/api/bootstrap")
+    response = await client.post(
+        "/api/auth/login",
+        json={"email": "legacy-bad@example.com", "password": "not-the-password"},
+    )
+    assert response.status_code == 401
+    assert _error(response.json())["code"] == "INVALID_CREDENTIALS"
+    assert verify_counts.argon2 == 1
+    assert len(verify_counts.bcrypt) == 1
+    assert verify_counts.bcrypt[0] == legacy.encode("ascii")
+    _assert_bcrypt_cost_12(passwords.DUMMY_BCRYPT_HASH)
 
 
 async def test_login_password_less_account_401(

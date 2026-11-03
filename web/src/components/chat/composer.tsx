@@ -84,7 +84,15 @@ export function firstPlaceholderOffset(body: string): number {
 
 interface ComposerProps {
   isStreaming: boolean;
-  onSend: (text: string, attachments: AttachmentPart[]) => void;
+  onSend: (
+    text: string,
+    attachments: AttachmentPart[],
+    turnGeneration: number,
+  ) => void;
+  // Read synchronously in submit(), before yieldToMain. The parent compares
+  // it when the deferred send runs and drops the turn if navigation, Stop,
+  // or the temporary toggle moved it.
+  readTurnGeneration: () => number;
   onStop: () => void;
   sendOnEnter?: boolean;
   supportsAttachments?: boolean;
@@ -276,6 +284,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       isStreaming,
       onSend,
       onStop,
+      readTurnGeneration,
       sendOnEnter = true,
       supportsAttachments = false,
       supportsVision = true,
@@ -780,8 +789,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(
       // attributed to the interaction): the expensive optimistic-send work —
       // big message-list state churn plus the fetch kickoff in `onSend` — then
       // runs in a fresh task instead of extending the input handler.
+      // Record the turn generation first. beginTurn bumps it only after this
+      // yield, so a New chat or temporary toggle during the gap would otherwise
+      // still send.
+      const turnGeneration = readTurnGeneration();
       void yieldToMain().then(() => {
-        onSend(outgoingText, outgoingAttachments);
+        onSend(outgoingText, outgoingAttachments, turnGeneration);
       });
     };
 

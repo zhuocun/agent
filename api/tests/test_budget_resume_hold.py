@@ -19,7 +19,8 @@ import json
 import os
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, replace
-from uuid import UUID
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -35,7 +36,7 @@ from app.agentic.orchestrator import (
     run_single,
 )
 from app.config import Settings, get_settings
-from app.db.models import Conversation, User
+from app.db.models import Conversation, Message, User
 from app.db.session import get_db
 from app.providers.pricing import compute_cost_breakdown
 from app.providers.protocol import (
@@ -423,6 +424,11 @@ async def test_worker_resume_halts_when_ledger_exceeds_the_run_cap() -> None:
     assert prompts == []
     finals = [event for event in events if isinstance(event, RunCost) and event.budget_halted]
     assert finals
+    # The continuation's own partial is a finding. An empty results map would
+    # synthesize "no worker findings" even though that prose is non-empty.
+    text = _answer_text(events)
+    assert "partial" in text
+    assert "no worker findings" not in text
 
 
 def _single_phase_unit(settings: Settings) -> float:
@@ -556,15 +562,22 @@ async def test_single_midflight_equal_hold_ignores_sum_float() -> None:
     Restored ``0.0006426000000000001`` plus session ``0.0672`` makes
     ``(total - already_billed)`` equal ``0.06720000000000001``. The summed
     call is therefore over the hold. The mid-flight call passes the session
-    as ``pending_usd`` and leaves ``total_usd`` at the restored amount. One
-    output token past the hold still trips. The cap still sees both amounts.
+    as ``pending_usd`` and leaves ``total_usd`` at the restored amount. The
+    smallest positive six-place output bill past the hold still trips. The
+    cap still sees both amounts.
     """
     restored = 0.0006426000000000001
     session = 0.0672
     hold = 0.0672
     cap = 1.0
     settings = _oracle_settings(AGENTIC_RUN_BUDGET_USD=cap)
-    one_output = _price(_fast_binding(settings), UsageUpdate(output_tokens=1))
+    # One fast output token is below half a microdollar, so it bills as zero.
+    binding = _fast_binding(settings)
+    one_output = 0.0
+    for output_tokens in range(1, 32):
+        one_output = _price(binding, UsageUpdate(output_tokens=output_tokens))
+        if one_output > 0.0:
+            break
     session_over = session + one_output
     assert one_output > 0.0
     assert session_over > hold
@@ -961,3 +974,78 @@ async def test_single_mode_remaining_0_05_raises_budget_error(
     )
     assert response.status_code == 429, response.text
     assert response.json()["error"]["code"] == "PLATFORM_BUDGET_EXCEEDED"
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(Message).where(Message.conversation_id == UUID(conv_id))
+            )
+        ).scalars().all()
+        assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_regenerate_hold_refusal_keeps_previous_assistant(
+    single_mode_client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remaining 0.05 is below the 0.0672 single-mode hold, so regenerate rolls back."""
+    monkeypatch.setenv("USAGE_BUDGET_USD", "0.05")
+    get_settings.cache_clear()
+    await single_mode_client.get("/api/bootstrap")
+    conv_id = await _seed_fast_conversation(session_factory)
+    async with session_factory() as session:
+        user_msg = Message(
+            conversation_id=UUID(conv_id),
+            client_message_id=uuid4(),
+            role="user",
+            parts=[{"type": "text", "text": "hello"}],
+            status=None,
+            attribution=None,
+            created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        )
+        session.add(user_msg)
+        await session.flush()
+        assistant = Message(
+            conversation_id=UUID(conv_id),
+            client_message_id=None,
+            role="assistant",
+            parts=[{"type": "text", "text": "first answer"}],
+            status="done",
+            attribution={"costUsd": 0},
+            responds_to_message_id=user_msg.id,
+            created_at=datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
+        )
+        session.add(assistant)
+        await session.commit()
+        assistant_id = assistant.id
+
+    response = await single_mode_client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={
+            "clientMessageId": "50000000-0000-4000-8000-000000000099",
+            "tierId": "fast",
+            "text": "ignored on regenerate",
+            "regenerate": True,
+            "agenticMode": "single",
+        },
+    )
+    assert response.status_code == 429, response.text
+    assert response.json()["error"]["code"] == "PLATFORM_BUDGET_EXCEEDED"
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(Message).where(Message.id == assistant_id))
+        ).scalar_one_or_none()
+        assert row is not None
+        assert row.role == "assistant"
+        assert row.status == "done"
+        attempt = (
+            await session.execute(
+                select(Message).where(
+                    Message.conversation_id == UUID(conv_id),
+                    Message.client_message_id
+                    == UUID("50000000-0000-4000-8000-000000000099"),
+                )
+            )
+        ).scalar_one_or_none()
+        assert attempt is None

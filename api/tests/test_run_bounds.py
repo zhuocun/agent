@@ -35,7 +35,8 @@ from typing import Any
 import pytest
 import structlog
 
-from app.agentic.orchestrator import run_orchestrator
+from app.agentic.continuation import AgenticContinuation
+from app.agentic.orchestrator import _resume_worker_continuation, run_orchestrator
 from app.config import DEFAULT_TOOL_RESULT_MAX_CHARS, Settings
 from app.providers.protocol import (
     AnswerDelta,
@@ -1064,3 +1065,83 @@ async def test_deep_research_trip_cancels_workers_and_keeps_survivors(
     assert len(tripped) == 1
     assert tripped[0]["event"] == "agentic.tripped"
     assert tripped[0]["stop_reason"] == "wall_clock_exceeded"
+
+
+async def test_resumed_worker_trips_on_the_wall_clock_after_one_round(
+    clock: _FakeClock,
+) -> None:
+    """A resumed worker uses the run tripwire. The first round past the deadline
+    is the only provider round, and the receipt names the time limit.
+
+    `budget_halted` stays the USD gate. Without a tripwire on the resume, the
+    same provider keeps opening rounds and the final receipt stays
+    `partial=False` with no time-limit suffix.
+    """
+    rounds: list[bool] = []
+
+    def _make_stream_for(prompt: str, **_kwargs: object) -> Any:
+        def _make(
+            _feedback: list[ToolResult],
+            suppress_tools: bool = False,
+            *,
+            answer_nudge: bool = False,
+        ) -> AsyncIterator[ProviderEvent]:
+            rounds.append(suppress_tools)
+            if len(rounds) == 1:
+                clock.advance(10.0)
+
+            async def _gen() -> AsyncIterator[ProviderEvent]:
+                yield AnswerDelta(text="resumed finding")
+                yield ToolCall(
+                    id="clock-1",
+                    name="get_current_time",
+                    status="running",
+                    input={},
+                )
+
+            return _gen()
+
+        return _make
+
+    continuation = AgenticContinuation(
+        phase="worker",
+        paused_subagent_id="worker-0",
+        user_text="DEEP_RESEARCH: alpha",
+        plan=("alpha",),
+        completed_workers=(),
+        planner_usage=UsageUpdate(),
+        planner_cost_usd=0.0,
+        budget_halted=False,
+        actual_cost_usd=0.0,
+        paused_worker_index=0,
+        paused_sub_question="alpha",
+        partial_answer="",
+        orchestration_mode="deep_research",
+    )
+    events = [
+        event
+        async for event in _resume_worker_continuation(
+            make_stream_for=_make_stream_for,
+            settings=_agentic_settings(RUN_WALL_CLOCK_SECONDS=10.0),
+            cost_for_usage=lambda _usage: 0.0,
+            continuation=continuation,
+            resume_tool_result=ToolResult(
+                tool_call_id="worker-0::call",
+                name="request_user_confirmation",
+                status="succeeded",
+                approval_state="approved",
+                summary="ok",
+            ),
+            server_approved_call_ids={"worker-0::call"},
+            budget_headroom_usd=None,
+        )
+    ]
+    assert rounds == [False]
+    answer = "".join(event.text for event in events if isinstance(event, AnswerDelta))
+    assert "resumed finding" in answer
+    assert "time limit" in answer
+    assert "run budget" not in answer
+    finals = [event for event in events if isinstance(event, RunCost) and event.phase == "final"]
+    assert finals
+    assert finals[-1].partial is True
+    assert finals[-1].budget_halted is False

@@ -311,7 +311,40 @@ type LocalChatMessage = ChatMessage & {
   error?: ApiError;
   runCost?: RunCostState | null;
   agenticCoercion?: AgenticCoercionState | null;
+  // Plain-send replay while this row still has a local- id. `submitted`
+  // replaces that id and drops both fields; retry then regenerates.
+  clientMessageId?: string;
+  sendAttachments?: AttachmentPart[];
 };
+
+// Messages removed on screen before the server accepts an edit, regenerate,
+// or local-id retry. `fresh` is set at the cut and stamped with beginTurn's
+// generation so a later turn cannot restore this snapshot.
+type CutSnapshot = {
+  messages: LocalChatMessage[];
+  generation: number;
+  kind: "edit" | "regenerate" | "retry";
+  fresh: boolean;
+};
+
+function firstTextPart(parts: MessagePart[]): string {
+  for (const part of parts) {
+    if (part.type === "text") return part.text;
+  }
+  return "";
+}
+
+function withServerUserId(
+  message: LocalChatMessage,
+  serverUserId: string,
+): LocalChatMessage {
+  return {
+    ...message,
+    id: serverUserId,
+    clientMessageId: undefined,
+    sendAttachments: undefined,
+  };
+}
 type ConversationSearchState = {
   query: string;
   results: ConversationSummary[] | null;
@@ -630,6 +663,10 @@ export function ChatThread() {
     text: string;
     attachments: AttachmentPart[];
   } | null>(null);
+  // True when this turn appended a new user row. A 409 may remove that row.
+  // A retry reuses the existing local- row and must not.
+  const pendingUserIsNewRef = useRef(false);
+  const cutSnapshotRef = useRef<CutSnapshot | null>(null);
   // Latest `handleSend`, for that toast's "Send again": it must resend with
   // the CURRENT tier / toggles, not the ones captured when the toast opened.
   const handleSendRef = useRef<
@@ -1047,6 +1084,66 @@ export function ChatThread() {
     const assistantId = assistantIdRef.current;
     if (!assistantId) return;
 
+    const cut = cutSnapshotRef.current;
+    const cutIsCurrent =
+      cut !== null && cut.generation === turnGenerationRef.current;
+    // Edit/regenerate drop later rows before the server accepts. A 409 is
+    // handled in handleStreamInProgress. An error with no submitted frame
+    // must not put the client snapshot back on a stored chat: the cut can
+    // already be committed. Temporary chats have nothing to refetch.
+    if (
+      result.status === "error" &&
+      !result.serverUserMessageId &&
+      cutIsCurrent &&
+      cut !== null &&
+      (cut.kind === "edit" || cut.kind === "regenerate")
+    ) {
+      cutSnapshotRef.current = null;
+      resumedApprovalRef.current = null;
+      pendingUserIsNewRef.current = false;
+      setPendingId(null);
+      assistantIdRef.current = null;
+      pendingUserIdRef.current = null;
+      const errorTitle = result.error?.title ?? "Message couldn't finish";
+      const errorBody = result.error?.body;
+      setLiveMessage(errorTitle);
+      showToast({
+        severity: "error",
+        title: errorTitle,
+        body: errorBody ? errorBody : undefined,
+      });
+      if (isTemporary || !activeConversationId) {
+        setMessages(cut.messages);
+        return;
+      }
+      const conversationId = activeConversationId;
+      const generation = turnGenerationRef.current;
+      void (async () => {
+        try {
+          const conversation = await fetchConversation(conversationId);
+          if (turnGenerationRef.current !== generation) return;
+          if (activeConversationIdRef.current !== conversationId) return;
+          setMessages(conversation.messages);
+        } catch (cause) {
+          const title =
+            cause instanceof ApiError ? cause.title : "Couldn't load chat";
+          setLiveMessage(title);
+          showToast({
+            severity: "error",
+            title,
+            body:
+              cause instanceof ApiError
+                ? cause.body
+                : cause instanceof Error
+                  ? cause.message
+                  : undefined,
+          });
+        }
+      })();
+      return;
+    }
+    if (cutIsCurrent) cutSnapshotRef.current = null;
+
     // Settle the paused card this resume answered. Without it the plan card
     // (and any approved tool card) kept the optimistic "Running" pill after the
     // run finished, until a reload read the settled row. The resume's own
@@ -1122,7 +1219,7 @@ export function ChatThread() {
       if (optimisticUserId && serverUserId) {
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === optimisticUserId ? { ...m, id: serverUserId } : m,
+            m.id === optimisticUserId ? withServerUserId(m, serverUserId) : m,
           ),
         );
       }
@@ -1130,6 +1227,7 @@ export function ChatThread() {
       setPendingId(null);
       assistantIdRef.current = null;
       pendingUserIdRef.current = null;
+      pendingUserIsNewRef.current = false;
       return;
     }
 
@@ -1236,7 +1334,7 @@ export function ChatThread() {
     setMessages((prev) => {
       const next = optimisticUserId && serverUserId
         ? prev.map((m) =>
-            m.id === optimisticUserId ? { ...m, id: serverUserId } : m,
+            m.id === optimisticUserId ? withServerUserId(m, serverUserId) : m,
           )
         : prev;
       return [...next, finalized];
@@ -1285,6 +1383,7 @@ export function ChatThread() {
     setPendingId(null);
     assistantIdRef.current = null;
     pendingUserIdRef.current = null;
+    pendingUserIsNewRef.current = false;
   }, [activeConversationId, isTemporary]);
 
   // A send was rejected with 409 STREAM_IN_PROGRESS — a response is still
@@ -1294,11 +1393,35 @@ export function ChatThread() {
   // non-destructively — put the user's text back in the composer and offer to
   // send it again, so a rejected send never silently loses the message. (P0-2)
   const handleStreamInProgress = useCallback(() => {
+    const cut = cutSnapshotRef.current;
+    const restoreCut =
+      cut !== null && cut.generation === turnGenerationRef.current;
+    if (cut && !restoreCut) cutSnapshotRef.current = null;
+    // 409 is raised before prepare. Restoring the pre-cut snapshot keeps the
+    // live stream; a refetch would replace it.
+    if (restoreCut && cut) {
+      cutSnapshotRef.current = null;
+      setMessages(cut.messages);
+      pendingUserIdRef.current = null;
+      pendingUserIsNewRef.current = false;
+      assistantIdRef.current = null;
+      resumedApprovalRef.current = null;
+      setPendingId(null);
+      plainSendRef.current = null;
+      setLiveMessage("A response is still generating");
+      showToast({
+        severity: "info",
+        title:
+          "A response is still generating — wait for it to finish or stop it.",
+      });
+      return;
+    }
     const optimisticUserId = pendingUserIdRef.current;
-    if (optimisticUserId) {
+    if (optimisticUserId && pendingUserIsNewRef.current) {
       setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId));
     }
     pendingUserIdRef.current = null;
+    pendingUserIsNewRef.current = false;
     assistantIdRef.current = null;
     resumedApprovalRef.current = null;
     setPendingId(null);
@@ -1445,6 +1568,9 @@ export function ChatThread() {
   // optimistic user bubble, and clear the synchronous busy state so the composer
   // re-arms. (P0-1 requirement (a))
   const handleStop = () => {
+    const cut = cutSnapshotRef.current;
+    const cutIsCurrent =
+      cut !== null && cut.generation === turnGenerationRef.current;
     turnGenerationRef.current += 1;
     // Compare mode owns its own per-column streams; fan Stop out to all of them
     // (the single-stream `stop()` below is inert here — no main stream is in
@@ -1458,6 +1584,7 @@ export function ChatThread() {
       return;
     }
     if (isStreaming) {
+      if (cutIsCurrent) cutSnapshotRef.current = null;
       stop();
       return;
     }
@@ -1466,10 +1593,16 @@ export function ChatThread() {
     cancelWelcomeTimers();
     setWelcomeExiting(false);
     setWelcomeSeamLanding(false);
-    const optimisticUserId = pendingUserIdRef.current;
-    if (optimisticUserId) {
-      setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId));
+    if (cutIsCurrent && cut) {
+      cutSnapshotRef.current = null;
+      setMessages(cut.messages);
+    } else {
+      const optimisticUserId = pendingUserIdRef.current;
+      if (optimisticUserId && pendingUserIsNewRef.current) {
+        setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId));
+      }
     }
+    pendingUserIsNewRef.current = false;
     pendingUserIdRef.current = null;
     assistantIdRef.current = null;
     setPendingId(null);
@@ -1499,8 +1632,25 @@ export function ChatThread() {
       responseFormat?: { type: "json_object" };
       attachments?: AttachmentPart[];
       agenticMode?: AgenticMode;
+      // Replay of a plain send that never received `submitted`. Omitted
+      // callers mint a new id inside this function.
+      clientMessageId?: string;
+      // The local- user row is already on screen. Do not treat the text as a
+      // new plain send: a 409 must not offer a second bubble.
+      reuseLocalUser?: boolean;
     }): Promise<void> => {
       const generation = ++turnGenerationRef.current;
+      const cut = cutSnapshotRef.current;
+      if (cut?.fresh) {
+        cutSnapshotRef.current = { ...cut, generation, fresh: false };
+      }
+      const turnAbandoned = (): boolean => {
+        if (generation === turnGenerationRef.current) return false;
+        if (cutSnapshotRef.current?.generation === generation) {
+          cutSnapshotRef.current = null;
+        }
+        return true;
+      };
       abortBeforeStartRef.current = false;
       let conversationId = activeConversationId;
       if (!conversationId) {
@@ -1519,7 +1669,7 @@ export function ChatThread() {
           });
           // Stop, navigation, or a newer send bumped the generation while this
           // create was in flight. Do not select the row or POST this prompt.
-          if (generation !== turnGenerationRef.current) return;
+          if (turnAbandoned()) return;
           // Stop pressed during the create round-trip — abandon this turn
           // before arming the stream. handleStop already cleared the optimistic
           // bubble + pendingId; just don't create/insert/start. (P0-1)
@@ -1542,7 +1692,7 @@ export function ChatThread() {
             setConversations((prev) => [summary, ...prev]);
           }
         } catch (cause) {
-          if (generation !== turnGenerationRef.current) return;
+          if (turnAbandoned()) return;
           const title =
             cause instanceof ApiError ? cause.title : "Couldn't start chat";
           setLiveMessage(title);
@@ -1552,21 +1702,23 @@ export function ChatThread() {
             setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId));
           }
           pendingUserIdRef.current = null;
+          pendingUserIsNewRef.current = false;
           assistantIdRef.current = null;
           setPendingId(null);
-          // Restore the typed text to the composer so a failed first-send
-          // create doesn't lose the user's message (the composer cleared it on
-          // submit). Only the plain-send path reaches create with no active
-          // conversation; edit/regenerate/continue/tool-approval run against an
-          // existing one. (P2-5)
-          if (
+          // Restore text and attachments when the composer is still empty.
+          // A newer draft typed during create wins; Send again keeps the
+          // failed payload. Only the plain-send path reaches create with no
+          // active conversation. (P2-5)
+          const plainSend =
             !args.regenerate &&
             !args.editMessageId &&
             !args.continueTurn &&
-            !args.toolApproval
-          ) {
-            composerRef.current?.setDraft(args.text);
-          }
+            !args.toolApproval;
+          const failedAttachments = args.attachments ?? [];
+          const restored = plainSend
+            ? (composerRef.current?.restoreDraft(args.text, failedAttachments) ??
+              false)
+            : false;
           showToast({
             severity: "error",
             title:
@@ -1577,23 +1729,44 @@ export function ChatThread() {
                 : cause instanceof Error
                   ? cause.message
                   : undefined,
+            ...(plainSend
+              ? {
+                  actions: [
+                    {
+                      label: "Send again",
+                      onClick: () => {
+                        const composer = composerRef.current;
+                        if (restored) {
+                          if (!composer || composer.getDraft() !== args.text) {
+                            return;
+                          }
+                          composer.setDraft("");
+                          composer.clearAttachments();
+                        }
+                        handleSendRef.current?.(args.text, failedAttachments);
+                      },
+                    },
+                  ],
+                }
+              : {}),
           });
           return;
         }
       }
 
-      if (generation !== turnGenerationRef.current) return;
+      if (turnAbandoned()) return;
 
       plainSendRef.current =
         !args.regenerate &&
         !args.editMessageId &&
         !args.continueTurn &&
-        !args.toolApproval
+        !args.toolApproval &&
+        !args.reuseLocalUser
           ? { text: args.text, attachments: args.attachments ?? [] }
           : null;
       start({
         conversationId,
-        clientMessageId: crypto.randomUUID(),
+        clientMessageId: args.clientMessageId ?? crypto.randomUUID(),
         tierId: args.tierId,
         providerId: args.providerId,
         text: args.text,
@@ -1621,7 +1794,21 @@ export function ChatThread() {
     [activeConversationId, isTemporary, start],
   );
 
-  const handleSend = (text: string, attachments: AttachmentPart[]) => {
+  const handleSend = (
+    text: string,
+    attachments: AttachmentPart[],
+    capturedTurnGeneration?: number,
+  ) => {
+    // submit() records the generation before yieldToMain. New chat leaves the
+    // id null, and turning temporary off keeps the same id, so the id alone
+    // cannot tell that this send was abandoned. Do not call beginTurn.
+    if (
+      capturedTurnGeneration !== undefined &&
+      capturedTurnGeneration !== turnGenerationRef.current
+    ) {
+      composerRef.current?.restoreDraft(text, attachments);
+      return;
+    }
     // Compare mode hijacks send: fan the prompt out to two columns instead of
     // committing a single turn. Attachments aren't offered in compare mode
     // (the toggle replaces the attach affordance contextually), so they're
@@ -1633,6 +1820,7 @@ export function ChatThread() {
     }
     const userBubbleId = localId();
     const assistantPlaceholderId = localId();
+    const clientMessageId = crypto.randomUUID();
     const visibleAttachments: AttachmentPart[] = attachments.map((attachment) => ({
       type: "attachment",
       id: attachment.id,
@@ -1658,6 +1846,7 @@ export function ChatThread() {
     deepResearchAtSendRef.current = effectiveDeepResearch;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
+    pendingUserIsNewRef.current = true;
 
     const commitTurn = () => {
       setMessages((prev) => [
@@ -1667,6 +1856,8 @@ export function ChatThread() {
           role: "user",
           createdAt: new Date().toISOString(),
           parts: [{ type: "text", text }, ...visibleAttachments],
+          clientMessageId,
+          sendAttachments: [...attachments],
         },
       ]);
       setPendingId(assistantPlaceholderId);
@@ -1681,6 +1872,7 @@ export function ChatThread() {
           ? { type: "json_object" }
           : undefined,
         attachments,
+        clientMessageId,
         agenticMode: deepResearchAtSendRef.current ? "deep_research" : undefined,
       });
     };
@@ -1696,6 +1888,16 @@ export function ChatThread() {
       welcomeExitTimerRef.current = window.setTimeout(() => {
         welcomeExitTimerRef.current = null;
         setWelcomeExiting(false);
+        // Turning temporary off bumps the generation and leaves this timer
+        // running. commitTurn would still call the closed-over beginTurn
+        // (isTemporary true, conversation id null) and create a temporary chat.
+        if (
+          capturedTurnGeneration !== undefined &&
+          capturedTurnGeneration !== turnGenerationRef.current
+        ) {
+          composerRef.current?.restoreDraft(text, attachments);
+          return;
+        }
         setWelcomeSeamLanding(true);
         commitTurn();
         if (welcomeSeamTimerRef.current !== null) {
@@ -1928,6 +2130,18 @@ export function ChatThread() {
     });
   };
 
+  const rememberCutSnapshot = (kind: CutSnapshot["kind"]) => {
+    cutSnapshotRef.current = {
+      kind,
+      generation: 0,
+      fresh: true,
+      messages: messages.map((message) => ({
+        ...message,
+        parts: [...message.parts],
+      })),
+    };
+  };
+
   const handleRegenerate = () => {
     if (isStreaming) return;
     // Compute the trailing user text from the pre-update `messages` snapshot
@@ -1942,6 +2156,7 @@ export function ChatThread() {
       return "";
     })();
     // Drop trailing assistant turn(s), then re-stream a fresh response.
+    rememberCutSnapshot("regenerate");
     setMessages((prev) => {
       const next = [...prev];
       while (next.length && next[next.length - 1].role === "assistant") next.pop();
@@ -1950,6 +2165,7 @@ export function ChatThread() {
     const regenId = localId();
     assistantIdRef.current = regenId;
     pendingUserIdRef.current = null;
+    pendingUserIsNewRef.current = false;
     tierAtSendRef.current = selectedTierId;
     providerAtSendRef.current = effectiveProviderId;
     searchAtSendRef.current = effectiveSearchEnabled;
@@ -1998,6 +2214,7 @@ export function ChatThread() {
       }
       return "";
     })();
+    rememberCutSnapshot("regenerate");
     setMessages((prev) => {
       const next = [...prev];
       while (next.length && next[next.length - 1].role === "assistant") next.pop();
@@ -2006,6 +2223,7 @@ export function ChatThread() {
     const regenId = localId();
     assistantIdRef.current = regenId;
     pendingUserIdRef.current = null;
+    pendingUserIsNewRef.current = false;
     tierAtSendRef.current = tierId;
     providerAtSendRef.current = resolvedProviderId;
     // Web search rides only when the CHOSEN tier/provider supports it.
@@ -2181,6 +2399,7 @@ export function ChatThread() {
   };
 
   const handleEditUserMessage = (messageId: string, newText: string) => {
+    if (isTemporary) return;
     if (isStreaming) {
       // Don't silently drop the edit — tell the user why it didn't apply. (P1-1)
       showToast({
@@ -2205,6 +2424,8 @@ export function ChatThread() {
     deepResearchAtSendRef.current = effectiveDeepResearch;
     assistantIdRef.current = assistantPlaceholderId;
     pendingUserIdRef.current = userBubbleId;
+    pendingUserIsNewRef.current = true;
+    rememberCutSnapshot("edit");
     setMessages((prev) => [
       ...prev.slice(0, idx),
       {
@@ -2226,6 +2447,73 @@ export function ChatThread() {
       responseFormat: jsonModeAtSendRef.current
         ? { type: "json_object" }
         : undefined,
+      agenticMode: deepResearchAtSendRef.current ? "deep_research" : undefined,
+    });
+  };
+
+  // Retry on an errored assistant. After `submitted` the user id is a server
+  // uuid and regenerate is correct. Before that, the user row is still local-
+  // and regenerate would target a message the server never stored.
+  const handleErrorRetry = (assistantMessageId: string) => {
+    if (isStreaming || pendingId) return;
+    const assistantIndex = messages.findIndex(
+      (message) => message.id === assistantMessageId,
+    );
+    let user: LocalChatMessage | undefined;
+    if (assistantIndex !== -1) {
+      for (let i = assistantIndex - 1; i >= 0; i--) {
+        if (messages[i].role === "user") {
+          user = messages[i];
+          break;
+        }
+      }
+    }
+    if (!user || !user.id.startsWith("local-")) {
+      if (isTemporary) return;
+      handleRegenerate();
+      return;
+    }
+    const clientMessageId = user.clientMessageId;
+    const attachments = user.sendAttachments ?? [];
+    if (!clientMessageId) return;
+    const text = firstTextPart(user.parts);
+    const userId = user.id;
+    rememberCutSnapshot("retry");
+    setMessages((prev) => {
+      const idx = prev.findIndex((message) => message.id === assistantMessageId);
+      if (idx === -1) return prev;
+      const hasLaterUser = prev
+        .slice(idx + 1)
+        .some((message) => message.role === "user");
+      if (hasLaterUser) {
+        return prev.filter((message) => message.id !== assistantMessageId);
+      }
+      return prev.slice(0, idx);
+    });
+    const assistantPlaceholderId = localId();
+    tierAtSendRef.current = selectedTierId;
+    providerAtSendRef.current = effectiveProviderId;
+    searchAtSendRef.current = effectiveSearchEnabled;
+    effortAtSendRef.current = effectiveReasoningEffort;
+    jsonModeAtSendRef.current = jsonModeEnabled;
+    deepResearchAtSendRef.current = effectiveDeepResearch;
+    assistantIdRef.current = assistantPlaceholderId;
+    pendingUserIdRef.current = userId;
+    pendingUserIsNewRef.current = false;
+    setPendingId(assistantPlaceholderId);
+    setLiveMessage("Generating response");
+    void beginTurn({
+      text,
+      tierId: tierAtSendRef.current,
+      providerId: providerAtSendRef.current,
+      webSearch: searchAtSendRef.current || undefined,
+      reasoningEffort: effortAtSendRef.current,
+      responseFormat: jsonModeAtSendRef.current
+        ? { type: "json_object" }
+        : undefined,
+      attachments,
+      clientMessageId,
+      reuseLocalUser: true,
       agenticMode: deepResearchAtSendRef.current ? "deep_research" : undefined,
     });
   };
@@ -2301,6 +2589,7 @@ export function ChatThread() {
 
   const handleNewChat = () => {
     turnGenerationRef.current += 1;
+    cutSnapshotRef.current = null;
     // Cancel any in-flight welcome→thread seam (see handleSelectConversation
     // for the corruption shape). New chat nulls activeConversationId, so a
     // pending exit timer firing here would commitTurn() into the wrong
@@ -2349,7 +2638,11 @@ export function ChatThread() {
   // any subsequent send creates a real (persisted) conversation lazily.
   const handleToggleTemporary = () => {
     turnGenerationRef.current += 1;
+    cutSnapshotRef.current = null;
     if (isTemporary) {
+      // Leave the welcome-exit timer running. Cancelling it here drops the
+      // draft the composer already cleared. The timer restores that draft
+      // when the generation no longer matches.
       setIsTemporary(false);
       return;
     }
@@ -2395,6 +2688,7 @@ export function ChatThread() {
 
   const handleSelectConversation = (id: string) => {
     turnGenerationRef.current += 1;
+    cutSnapshotRef.current = null;
     // Cancel any in-flight welcome→thread seam. Without this, an exit timer
     // scheduled against the previous (empty) conversation would fire after we
     // switch — calling commitTurn() with the closure-captured `text` and
@@ -2508,6 +2802,7 @@ export function ChatThread() {
       setPendingId(null);
       assistantIdRef.current = null;
       pendingUserIdRef.current = null;
+      cutSnapshotRef.current = null;
       setLiveMessage("");
       reset();
       setActiveConversationId(null);
@@ -4294,6 +4589,17 @@ export function ChatThread() {
                 statusBannerActive={degradedActive}
               >
                 {messages.map((m, index) => {
+                  let precedingUserIsLocal = false;
+                  if (m.role === "assistant") {
+                    for (let i = index - 1; i >= 0; i--) {
+                      if (messages[i].role === "user") {
+                        precedingUserIsLocal = messages[i].id.startsWith(
+                          "local-",
+                        );
+                        break;
+                      }
+                    }
+                  }
                   const canBranchMessage =
                     !!activeConversationId &&
                     !isTemporary &&
@@ -4303,7 +4609,11 @@ export function ChatThread() {
                     <UserMessage
                       key={m.id}
                       message={m}
-                      canEdit={!isStreaming && !m.id.startsWith("local-")}
+                      canEdit={
+                        !isTemporary &&
+                        !isStreaming &&
+                        !m.id.startsWith("local-")
+                      }
                       canBranch={canBranchMessage}
                       isBranching={branchingMessageId === m.id}
                       onEdit={(newText) => handleEditUserMessage(m.id, newText)}
@@ -4321,6 +4631,7 @@ export function ChatThread() {
                       canBranch={canBranchMessage}
                       isBranching={branchingMessageId === m.id}
                       canRegenerate={
+                        !isTemporary &&
                         !isStreaming &&
                         m.id === lastAssistantId &&
                         ((m.status ?? "done") === "done" || m.status === "stopped")
@@ -4347,7 +4658,12 @@ export function ChatThread() {
                           : undefined
                       }
                       onRegenerate={handleRegenerate}
-                      onRegenerateWith={handleRegenerateWith}
+                      onErrorRetry={
+                        isTemporary && !precedingUserIsLocal
+                          ? null
+                          : () => handleErrorRetry(m.id)
+                      }
+                      onRegenerateWith={isTemporary ? undefined : handleRegenerateWith}
                       regenerateOptions={{
                         tiers: modelTiers,
                         providerOptions,
@@ -4424,6 +4740,7 @@ export function ChatThread() {
                 isStreaming={isBusy}
                 onSend={handleSend}
                 onStop={handleStop}
+                readTurnGeneration={() => turnGenerationRef.current}
                 // Offline draft persistence is keyed to the active conversation
                 // (null ⇒ the new-chat slot) so an in-progress message survives
                 // reloads and conversation switches (T02). Temporary chats are

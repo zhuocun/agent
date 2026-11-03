@@ -83,6 +83,10 @@ interface AssistantMessageProps {
   isAwaitingApproval?: boolean;
   onBranch?: () => void;
   onRegenerate?: () => void;
+  // Error-footer Retry. Distinct from toolbar regenerate: a turn that never
+  // received `submitted` still has a local- user id and must not regenerate.
+  // `null` hides Retry (temporary chats, where regenerate stays unavailable).
+  onErrorRetry?: (() => void) | null;
   // Regenerate with a specific model/provider (Feature 4). Threaded straight to
   // MessageActions, which renders the split dropdown when both are present.
   onRegenerateWith?: (tierId: ModelTierId, providerId?: string) => void;
@@ -180,6 +184,7 @@ export function AssistantMessage({
   isAwaitingApproval,
   onBranch,
   onRegenerate,
+  onErrorRetry,
   onRegenerateWith,
   regenerateOptions,
   onContinue,
@@ -523,7 +528,9 @@ export function AssistantMessage({
       {isErrored ? (
         <ErrorFooter
           error={error}
-          onRetry={onRegenerate}
+          onRetry={
+            onErrorRetry === null ? undefined : (onErrorRetry ?? onRegenerate)
+          }
           onOpenSettings={onOpenSettings}
           onDismissError={onDismissError}
         />

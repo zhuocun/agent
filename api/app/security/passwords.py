@@ -102,3 +102,32 @@ def verify_password(plaintext: str, hashed: str) -> tuple[bool, bool]:
         return (ok, ok)
 
     return (False, False)
+
+
+def password_hash_scheme(hashed: str | None) -> str:
+    """Return which verifier `verify_password` runs for `hashed`.
+
+    `"argon2"`, `"bcrypt"`, or `"none"` (empty, unknown, or malformed prefix).
+    `"none"` means `verify_password` returns without hashing work.
+    """
+    if not hashed:
+        return "none"
+    if hashed.startswith("$argon2"):
+        return "argon2"
+    if hashed.startswith(("$2a$", "$2b$", "$2y$")):
+        return "bcrypt"
+    return "none"
+
+
+# Fixed cost-12 digest. Plaintext is irrelevant; login failure paths call
+# `dummy_bcrypt_verify` so a caller cannot skip bcrypt work. Cost stays 12 in
+# production. Tests that mint legacy rows use a lower cost on purpose.
+DUMMY_BCRYPT_HASH = b"$2b$12$SF8KnQP9JZ1PjCz5SQLoFeFWLh6ukPWt1Fj1rB9fqh49HCV/2CPti"
+
+
+def dummy_bcrypt_verify(plaintext: str) -> None:
+    """Spend one cost-12 bcrypt verify. The digest is not a user password."""
+    try:
+        bcrypt.checkpw(_truncate_for_bcrypt(plaintext), DUMMY_BCRYPT_HASH)
+    except (ValueError, UnicodeEncodeError):
+        return

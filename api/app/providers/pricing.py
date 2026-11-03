@@ -12,7 +12,9 @@ fall back to 10% of the input rate (the Anthropic cache-read convention).
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 from app.providers.protocol import UsageUpdate
 from app.providers.tiers import (
@@ -32,13 +34,44 @@ from app.schemas.message import (
     Substitution,
 )
 
+_USD_QUANTUM = Decimal("0.000001")
+_MILLION = Decimal(1_000_000)
+_CACHE_FALLBACK_FRACTION = Decimal("0.1")
 
-def _base_rates(binding: TierBinding, now: datetime) -> tuple[float, float, float, bool]:
-    """Resolve the (input, output, cache) per-million rates and the promo flag.
+
+def _decimal_rate(rate: float) -> Decimal:
+    """Published per-million rate as a decimal, not the binary float value."""
+    return Decimal(str(rate))
+
+
+def _usd_float(amount: Decimal) -> float:
+    """Six-place half-up USD, as a float ``round(..., 6)`` still preserves."""
+    quantized = amount.quantize(_USD_QUANTUM, rounding=ROUND_HALF_UP)
+    value = float(quantized)
+    if Decimal(str(round(value, 6))) == quantized:
+        return value
+    target = float(quantized)
+    candidate = value
+    for _ in range(64):
+        candidate = math.nextafter(
+            candidate,
+            math.inf if target >= candidate else -math.inf,
+        )
+        if Decimal(str(round(candidate, 6))) == quantized:
+            return candidate
+    return value
+
+
+def _base_rates(
+    binding: TierBinding, now: datetime
+) -> tuple[float, float, Decimal, Decimal, Decimal, bool]:
+    """Resolve list rates, decimal billing rates, and the promo flag.
 
     A binding with an ACTIVE promo (T05) bills at the promo's rates; otherwise
     its list rates. The cache rate falls back to 10% of the input rate when the
     binding/promo leaves it unset (the Anthropic cache-read convention).
+    The two floats are the published list rates callers already expose. Token
+    math uses the decimals so a rate such as 0.14 stays exact.
     """
     promo = binding.promo
     if promo_active(promo, now) and promo is not None:
@@ -55,8 +88,14 @@ def _base_rates(binding: TierBinding, now: datetime) -> tuple[float, float, floa
         out_per_m = binding.list_price_out_per_m
         cache_source = binding.cache_read_per_m
         promo_applied = False
-    cache_per_m = cache_source if cache_source is not None else 0.1 * in_per_m
-    return in_per_m, out_per_m, cache_per_m, promo_applied
+    in_dec = _decimal_rate(in_per_m)
+    out_dec = _decimal_rate(out_per_m)
+    cache_dec = (
+        _decimal_rate(cache_source)
+        if cache_source is not None
+        else in_dec * _CACHE_FALLBACK_FRACTION
+    )
+    return in_per_m, out_per_m, in_dec, out_dec, cache_dec, promo_applied
 
 
 def _flat_subtotal(
@@ -65,19 +104,19 @@ def _flat_subtotal(
     output_tokens: int,
     reasoning_tokens: int,
     cached_input_tokens: int,
-    in_per_m: float,
-    out_per_m: float,
-    cache_per_m: float,
-) -> float:
+    in_per_m: Decimal,
+    out_per_m: Decimal,
+    cache_per_m: Decimal,
+) -> Decimal:
     """Baseline (no long-context surcharge) subtotal in USD.
 
     PRD 07 §7 rule 7: reasoning bills at the OUTPUT rate and is never
     cache-eligible. Cache reads bill at their own per-million rate.
     """
-    input_cost = input_tokens * in_per_m / 1_000_000
-    output_cost = output_tokens * out_per_m / 1_000_000
-    reasoning_cost = reasoning_tokens * out_per_m / 1_000_000
-    cached_cost = cached_input_tokens * cache_per_m / 1_000_000
+    input_cost = Decimal(input_tokens) * in_per_m / _MILLION
+    output_cost = Decimal(output_tokens) * out_per_m / _MILLION
+    reasoning_cost = Decimal(reasoning_tokens) * out_per_m / _MILLION
+    cached_cost = Decimal(cached_input_tokens) * cache_per_m / _MILLION
     return input_cost + output_cost + reasoning_cost + cached_cost
 
 
@@ -99,7 +138,7 @@ def compute_cost_breakdown(
     """Compute a CostBreakdown from accumulated usage + tier pricing.
 
     Pricing layers, applied in order (each optional; with none set the result is
-    byte-for-byte the historical flat computation):
+    the six-place half-up of the flat decimal token sum):
 
     1. **Promo (T05).** An active `binding.promo` swaps the list rates for the
        promo rates and flips `promo_applied`. A lapsed promo is inert.
@@ -121,7 +160,9 @@ def compute_cost_breakdown(
     injectable so the promo-expiry boundary is unit-testable.
     """
     now = now if now is not None else datetime.now(UTC)
-    in_per_m, out_per_m, cache_per_m, promo_applied = _base_rates(binding, now)
+    in_per_m, out_per_m, in_dec, out_dec, cache_dec, promo_applied = _base_rates(
+        binding, now
+    )
 
     # T19: image attachments add estimated input tokens on multimodal bindings.
     image_tokens = (
@@ -139,9 +180,9 @@ def compute_cost_breakdown(
         output_tokens=output_tokens,
         reasoning_tokens=reasoning_tokens,
         cached_input_tokens=cached_input_tokens,
-        in_per_m=in_per_m,
-        out_per_m=out_per_m,
-        cache_per_m=cache_per_m,
+        in_per_m=in_dec,
+        out_per_m=out_dec,
+        cache_per_m=cache_dec,
     )
 
     # Token budget that decides whether a long-context threshold is crossed: the
@@ -150,7 +191,7 @@ def compute_cost_breakdown(
     context_tokens = input_tokens + cached_input_tokens
 
     subtotal = baseline
-    session_surcharge = 0.0
+    session_surcharge = Decimal(0)
     long_context = LongContext(
         flat=binding.long_context_flat,
         tier_scope=None,
@@ -170,9 +211,9 @@ def compute_cost_breakdown(
             output_tokens=output_tokens,
             reasoning_tokens=reasoning_tokens,
             cached_input_tokens=cached_input_tokens,
-            in_per_m=in_per_m * sm.input,
-            out_per_m=out_per_m * sm.output,
-            cache_per_m=cache_per_m,
+            in_per_m=in_dec * _decimal_rate(sm.input),
+            out_per_m=out_dec * _decimal_rate(sm.output),
+            cache_per_m=cache_dec,
         )
         session_surcharge = repriced - baseline
         subtotal = repriced
@@ -188,7 +229,11 @@ def compute_cost_breakdown(
         # reprice at the band's rate; everything below stays at the list rate.
         # The delta on those overflow tokens is the surcharge.
         over_input = max(0, input_tokens - band.threshold_tokens)
-        surcharge = over_input * (band.price_in_per_m - in_per_m) / 1_000_000
+        surcharge = (
+            Decimal(over_input)
+            * (_decimal_rate(band.price_in_per_m) - in_dec)
+            / _MILLION
+        )
         session_surcharge = surcharge
         subtotal = baseline + surcharge
         long_context = LongContext(
@@ -214,8 +259,8 @@ def compute_cost_breakdown(
         cached_input_tokens=cached_input_tokens,
         long_context=long_context,
         promo_applied=promo_applied,
-        subtotal_usd=subtotal,
-        session_surcharge_usd=session_surcharge,
+        subtotal_usd=_usd_float(subtotal),
+        session_surcharge_usd=_usd_float(session_surcharge),
     )
 
 

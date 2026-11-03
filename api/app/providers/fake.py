@@ -757,6 +757,21 @@ class FakeProvider:
         # assert the continuation streamed as a NEW assistant bubble. The prior
         # partial text lives in the replayed history, not here.
         if "Continue your previous response" in user_text:
+            # Continue sends a fixed instruction, so the original user turn is
+            # the only place a FORCE_ERROR marker can ride. Raise the same way
+            # the marker does on a normal send: one delta, then the error.
+            prior_user_text = next(
+                (
+                    message.text
+                    for message in reversed(history)
+                    if message.role == "user"
+                ),
+                "",
+            )
+            if prior_user_text.startswith("FORCE_ERROR:"):
+                await asyncio.sleep(self._delay)
+                yield AnswerDelta(text="…continued: ")
+                raise RuntimeError("forced provider error")
             await asyncio.sleep(self._delay)
             yield AnswerDelta(text="…continued: ")
             await asyncio.sleep(self._delay)

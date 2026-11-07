@@ -393,7 +393,7 @@ class OutputTest(Base):
 
     def test_unknown_or_incomplete_arguments(self):
         self.write_state()
-        for args in (["--host", "claude"], ["--max-streak", "3"], ["--state"], ["extra"]):
+        for args in (["--host", "bogus"], ["--max-streak", "3"], ["--state"], ["extra"]):
             with self.subTest(args=args):
                 self.assert_stop(self.hook(event(self.root), *args))
 
@@ -466,6 +466,551 @@ class FrontmatterCommandTest(Base):
             out = self.run_command(clean_env(HOME=home))
         self.assert_stop(out)
         self.assertFalse(os.path.exists(self.sidecar))
+
+
+HOST_ENV_KEYS = HOOK_ENV_KEYS + ("CURSOR_PROJECT_DIR", "DEVIN_PROJECT_DIR")
+
+
+def host_env(**extra):
+    env = {k: v for k, v in os.environ.items() if k not in HOST_ENV_KEYS}
+    env.update(extra)
+    return env
+
+
+def codex_event(root, session=OWNER, continued=False, **extra):
+    """A Codex root Stop payload: the nine fields of the host's input schema."""
+    ev = {"session_id": session, "turn_id": "1", "transcript_path": None, "cwd": root,
+          "hook_event_name": "Stop", "model": "example-model", "permission_mode": "default",
+          "stop_hook_active": continued, "last_assistant_message": "Finished this pass."}
+    ev.update(extra)
+    return ev
+
+
+def cursor_event(root, session=OWNER, loop_count=0, **extra):
+    """A Cursor stop payload as the interactive client builds it."""
+    ev = {"conversation_id": session, "session_id": session, "generation_id": "gen-1",
+          "hook_event_name": "stop", "cursor_version": "2026.11.05",
+          "workspace_roots": [root], "user_email": None, "transcript_path": None,
+          "model": "example-model", "status": "completed", "loop_count": loop_count,
+          "input_tokens": 100, "output_tokens": 10}
+    ev.update(extra)
+    return ev
+
+
+def antigravity_event(root, session=OWNER, **extra):
+    """An Antigravity Stop payload with its public fields."""
+    ev = {"conversationId": session, "workspacePaths": [root],
+          "transcriptPath": "/home/u/.gemini/brain/%s/transcript_full.jsonl" % session,
+          "artifactDirectoryPath": "/home/u/.gemini/brain/%s" % session,
+          "modelName": "auto", "executionNum": 0, "terminationReason": "NO_TOOL_CALL",
+          "error": "", "fullyIdle": True}
+    ev.update(extra)
+    return ev
+
+
+def devin_event(session=OWNER, continued=False, **extra):
+    """A Devin Stop payload: no cwd, no agent_id, no background task list."""
+    ev = {"hook_event_name": "Stop", "stop_hook_active": continued,
+          "last_assistant_message": "The current item is complete.",
+          "session_id": session, "prompt_id": "prompt-1"}
+    ev.update(extra)
+    return ev
+
+
+def active_text(state, turn=1):
+    return ("[agent-loop] Loop active in %s: turn %d/50, 1 actionable, 0 waiting, "
+            "0 need the user." % (state, turn)) + INSTRUCTION
+
+
+class HostBase(Base):
+    def run_host(self, host, ev, env=None, cwd=None, args=()):
+        proc = subprocess.run([sys.executable, HOOK, "--host", host] + list(args),
+                              input=json.dumps(ev), stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True,
+                              env=env or host_env(), cwd=cwd or self.elsewhere, timeout=20)
+        return self.check_output(proc)
+
+    def message(self, out, key, decision=None):
+        expected = [key] if decision is None else ["decision", key]
+        self.assertEqual(sorted(out), sorted(expected), out)
+        if decision is not None:
+            self.assertEqual(out["decision"], decision)
+        self.assertTrue(out[key].startswith("[agent-loop] "), out[key])
+        return out[key]
+
+    def accepted(self):
+        """Control: the host's baseline event continues, so a rejection below is specific."""
+        self.write_state()
+        self.message(self.control_output(), *self.CONTINUE_KEY)
+
+    def write_rival_state(self):
+        """A valid state file in the other directory that another session owns."""
+        with open(os.path.join(self.elsewhere, ".agent-loop.md"), "w",
+                  encoding="utf-8") as handle:
+            handle.write(STATE.format(goal=GOAL, owner="sess-other", stop="", budget=50,
+                                      items=READY))
+
+
+class ArgumentTest(HostBase):
+    def test_explicit_claude_host_matches_default(self):
+        self.write_state()
+        out = self.run_host("claude", event(self.root))
+        self.assertEqual(out, {"decision": "block", "reason": active_text(self.state)})
+
+    def test_unknown_repeated_or_valueless_host(self):
+        self.write_state()
+        for args in (["--host", "gemini"], ["--host", "Codex"], ["--host", ""], ["--host"],
+                     ["--host", "claude", "--host", "claude"],
+                     ["--state", self.state, "--state", self.state]):
+            with self.subTest(args=args):
+                self.assert_stop(self.hook(event(self.root), *args))
+
+
+class CodexTest(HostBase):
+    CONTINUE_KEY = ("reason", "block")
+
+    def codex(self, ev, env=None):
+        return self.run_host("codex", ev, env=env)
+
+    def control_output(self):
+        return self.codex(codex_event(self.root))
+
+    def test_continue_exact_output(self):
+        self.write_state()
+        self.assertEqual(self.codex(codex_event(self.root)),
+                         {"decision": "block", "reason": active_text(self.state)})
+
+    def test_non_owner_and_stop_set(self):
+        self.accepted()
+        self.write_state(owner="sess-other")
+        self.assert_stop(self.codex(codex_event(self.root)))
+        self.write_state(stop="paused")
+        self.assert_stop(self.codex(codex_event(self.root)))
+
+    def test_wrong_event_name(self):
+        self.accepted()
+        for name in ("stop", "SubagentStop", "SessionEnd", None):
+            with self.subTest(name=name):
+                self.write_state()
+                self.assert_stop(self.codex(codex_event(self.root, hook_event_name=name)))
+
+    def test_agent_id_key_rejects_even_when_null(self):
+        self.accepted()
+        for value in ("agent-1", None):
+            with self.subTest(value=value):
+                self.write_state()
+                self.assert_stop(self.codex(codex_event(self.root, agent_id=value)))
+
+    def test_stop_hook_active_must_be_bool(self):
+        self.accepted()
+        for value in ("true", 1, None):
+            with self.subTest(value=value):
+                self.write_state()
+                self.assert_stop(self.codex(codex_event(self.root, stop_hook_active=value)))
+
+    def test_no_progress_across_automatic_turns(self):
+        self.write_state()
+        self.message(self.codex(codex_event(self.root)), "reason", "block")
+        text = self.message(self.codex(codex_event(self.root, continued=True)), "reason", "block")
+        self.assertIn(NO_PROGRESS, text)
+        self.assert_stop(self.codex(codex_event(self.root, continued=True)))
+
+    def test_roots_are_cwd_only_and_no_waiter_signal(self):
+        self.accepted()
+        self.write_state()
+        out = self.codex(codex_event(self.elsewhere), env=host_env(CLAUDE_PROJECT_DIR=self.root))
+        self.assert_stop(out)
+        self.write_state(items=WAITING)
+        self.assert_stop(self.codex(codex_event(self.root, background_tasks=[])))
+
+
+class CursorTest(HostBase):
+    CONTINUE_KEY = ("followup_message",)
+
+    def cursor(self, ev, env=None):
+        return self.run_host("cursor", ev, env=env)
+
+    def control_output(self):
+        return self.cursor(cursor_event(self.root))
+
+    def test_continue_exact_output(self):
+        self.write_state()
+        self.assertEqual(self.cursor(cursor_event(self.root)),
+                         {"followup_message": active_text(self.state)})
+
+    def test_non_owner_and_stop_set(self):
+        self.accepted()
+        self.write_state(owner="sess-other")
+        self.assert_stop(self.cursor(cursor_event(self.root)))
+        self.write_state(stop="done")
+        self.assert_stop(self.cursor(cursor_event(self.root)))
+
+    def test_wrong_event_name(self):
+        self.accepted()
+        for name in ("Stop", "afterAgentResponse", "sessionEnd", None):
+            with self.subTest(name=name):
+                self.write_state()
+                self.assert_stop(self.cursor(cursor_event(self.root, hook_event_name=name)))
+
+    def test_subagent_stop_rejected(self):
+        self.accepted()
+        self.write_state()
+        self.assert_stop(self.cursor(cursor_event(self.root, hook_event_name="subagentStop",
+                                                  subagent_id="sub-1")))
+
+    def test_non_completed_status(self):
+        self.accepted()
+        for status in ("aborted", "error", None):
+            with self.subTest(status=status):
+                self.write_state()
+                self.assert_stop(self.cursor(cursor_event(self.root, status=status)))
+
+    def test_bad_loop_count(self):
+        self.accepted()
+        for value in (-1, True, False, "0", 1.0, None):
+            with self.subTest(value=value):
+                self.write_state()
+                self.assert_stop(self.cursor(cursor_event(self.root, loop_count=value)))
+        self.write_state()
+        ev = cursor_event(self.root)
+        del ev["loop_count"]
+        self.assert_stop(self.cursor(ev))
+
+    def test_conversation_id_required(self):
+        self.accepted()
+        for value in ("", None, 7):
+            with self.subTest(value=value):
+                self.write_state()
+                self.assert_stop(self.cursor(cursor_event(self.root, conversation_id=value)))
+
+    def test_positive_loop_count_is_automatic_turn(self):
+        self.write_state()
+        self.cursor(cursor_event(self.root))
+        text = self.message(self.cursor(cursor_event(self.root, loop_count=1)),
+                            "followup_message")
+        self.assertIn(NO_PROGRESS, text)
+        self.assert_stop(self.cursor(cursor_event(self.root, loop_count=2)))
+        self.assertNotIn(NO_PROGRESS, self.message(
+            self.cursor(cursor_event(self.root, loop_count=0)), "followup_message"))
+
+    def test_workspace_roots_then_project_dir(self):
+        self.write_state()
+        ev = cursor_event(self.root, workspace_roots=[7, self.elsewhere, os.path.join(self.root, "x")])
+        os.mkdir(os.path.join(self.root, "x"))
+        self.message(self.cursor(ev), "followup_message")
+        self.write_state()
+        ev = cursor_event(self.root, workspace_roots=[self.elsewhere])
+        self.assert_stop(self.cursor(ev))
+        self.message(self.cursor(ev, env=host_env(CURSOR_PROJECT_DIR=self.root)),
+                     "followup_message")
+
+    def test_two_valid_roots_choose_first(self):
+        self.write_state()
+        self.write_rival_state()
+        ev = cursor_event(self.root, workspace_roots=[self.root, self.elsewhere])
+        self.assertEqual(self.cursor(ev), {"followup_message": active_text(self.state)})
+        self.write_state()
+        ev = cursor_event(self.root, workspace_roots=[self.root])
+        self.assertEqual(self.cursor(ev, env=host_env(CURSOR_PROJECT_DIR=self.elsewhere)),
+                         {"followup_message": active_text(self.state)})
+
+    def test_no_waiter_signal(self):
+        self.accepted()
+        self.write_state(items=WAITING)
+        self.assert_stop(self.cursor(cursor_event(self.root, background_tasks=[])))
+
+
+class AntigravityTest(HostBase):
+    CONTINUE_KEY = ("reason", "continue")
+
+    def agy(self, ev):
+        return self.run_host("antigravity", ev)
+
+    def control_output(self):
+        return self.agy(antigravity_event(self.root))
+
+    def test_continue_exact_output_sets_pending(self):
+        self.write_state()
+        self.assertEqual(self.agy(antigravity_event(self.root)),
+                         {"decision": "continue", "reason": active_text(self.state)})
+        data = self.sidecar_data()
+        self.assertEqual(sorted(data), ["goal", "key", "pending", "strikes", "turns"])
+        self.assertEqual((data["turns"], data["pending"]), (1, OWNER))
+
+    def test_non_owner_and_stop_set(self):
+        self.accepted()
+        self.write_state(owner="sess-other")
+        self.assert_stop(self.agy(antigravity_event(self.root)))
+        self.write_state(stop="paused")
+        self.assert_stop(self.agy(antigravity_event(self.root)))
+
+    def test_event_name_absent_or_stop(self):
+        for key in ("hook_event_name", "hookEventName"):
+            for name, accepted in (("Stop", True), ("stop", False), ("SubagentStop", False),
+                                   (None, False)):
+                with self.subTest(key=key, name=name):
+                    self.write_state()
+                    out = self.agy(antigravity_event(self.root, **{key: name}))
+                    if accepted:
+                        self.message(out, "reason", "continue")
+                    else:
+                        self.assert_stop(out)
+
+    def test_error_set(self):
+        for value in ("model error", None, 0):
+            with self.subTest(value=value):
+                self.write_state()
+                self.assert_stop(self.agy(antigravity_event(self.root, error=value)))
+        self.write_state()
+        ev = antigravity_event(self.root)
+        del ev["error"]
+        self.message(self.agy(ev), "reason", "continue")
+
+    def test_conversation_id_required(self):
+        self.accepted()
+        for value in ("", None, 7):
+            with self.subTest(value=value):
+                self.write_state()
+                self.assert_stop(self.agy(antigravity_event(self.root, conversationId=value)))
+
+    def test_pending_round_trip_and_no_progress(self):
+        self.write_state()
+        first = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
+        self.assertNotIn(NO_PROGRESS, first)
+        second = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
+        self.assertIn(NO_PROGRESS, second)
+        self.assertEqual((self.sidecar_data()["strikes"], self.sidecar_data()["pending"]),
+                         (1, OWNER))
+        self.assert_stop(self.agy(antigravity_event(self.root)))
+        data = self.sidecar_data()
+        self.assertEqual((data["turns"], data["strikes"], data["pending"]), (2, 2, None))
+        third = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
+        self.assertNotIn(NO_PROGRESS, third)
+        self.assertEqual(self.sidecar_data()["strikes"], 0)
+
+    def test_pending_for_another_session_is_not_automatic(self):
+        self.write_state()
+        self.agy(antigravity_event(self.root))
+        data = self.sidecar_data()
+        data["pending"] = "sess-other"
+        self.write_sidecar(json.dumps(data))
+        self.assertNotIn(NO_PROGRESS, self.message(self.agy(antigravity_event(self.root)),
+                                                   "reason", "continue"))
+
+    def test_budget_exhaustion_clears_pending(self):
+        self.write_state(budget=1)
+        self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
+        self.assertEqual(self.sidecar_data()["pending"], OWNER)
+        self.log(1)
+        self.assert_stop(self.agy(antigravity_event(self.root)))
+        self.assertIsNone(self.sidecar_data()["pending"])
+
+    def test_sidecar_without_pending_is_valid(self):
+        self.write_state()
+        self.write_sidecar(json.dumps({"goal": None, "turns": 0, "key": None, "strikes": 0}))
+        self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
+        self.assertEqual(self.sidecar_data()["pending"], OWNER)
+
+    def test_corrupt_pending(self):
+        self.accepted()
+        for pending in (5, True, ["sess-owner"], {"id": OWNER}):
+            content = json.dumps({"goal": None, "turns": 0, "key": None, "strikes": 0,
+                                  "pending": pending})
+            with self.subTest(pending=pending):
+                self.write_state()
+                self.write_sidecar(content)
+                self.assert_stop(self.agy(antigravity_event(self.root)))
+                with open(self.sidecar, encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), content)
+
+    def test_other_hosts_ignore_pending(self):
+        content = json.dumps({"goal": None, "turns": 0, "key": None, "strikes": 0,
+                              "pending": 5})
+        self.write_state()
+        self.write_sidecar(content)
+        self.assert_stop(self.agy(antigravity_event(self.root)))
+        self.assert_block(self.hook(event(self.root)), "turn 1/50")
+        self.write_state()
+        self.write_sidecar(json.dumps({"goal": None, "turns": 0, "key": None, "strikes": 0,
+                                       "pending": OWNER}))
+        self.assertNotIn(NO_PROGRESS, self.reason(self.run_host(
+            "codex", codex_event(self.root))))
+        self.assertNotIn("pending", self.sidecar_data())
+
+    def test_fully_idle_waiter_branch(self):
+        self.write_state(items="\n".join([WAITING, USER]))
+        self.assert_stop(self.agy(antigravity_event(self.root, fullyIdle=False)))
+        self.assertFalse(os.path.exists(self.sidecar))
+        ev = antigravity_event(self.root)
+        del ev["fullyIdle"]
+        self.assert_stop(self.agy(ev))
+        self.assert_stop(self.agy(antigravity_event(self.root, fullyIdle="true")))
+        text = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
+        self.assertIn("1 waiting item(s) but no background task is running", text)
+        self.assertEqual(self.sidecar_data()["pending"], OWNER)
+        self.assert_stop(self.agy(antigravity_event(self.root)))
+        self.assertIsNone(self.sidecar_data()["pending"])
+
+    def test_workspace_paths_in_order(self):
+        self.write_state()
+        ev = antigravity_event(self.root, workspacePaths=[None, self.elsewhere, self.root])
+        self.message(self.agy(ev), "reason", "continue")
+        self.write_state()
+        self.assert_stop(self.agy(antigravity_event(self.root, workspacePaths=self.root)))
+
+    def test_two_valid_roots_choose_first(self):
+        self.write_state()
+        self.write_rival_state()
+        ev = antigravity_event(self.root, workspacePaths=[self.root, self.elsewhere])
+        self.assertEqual(self.agy(ev), {
+            "decision": "continue", "reason": active_text(self.state)})
+
+    def unchanged_automatic_turn(self):
+        """Grant a continuation, then an unchanged automatic stop: strikes 1, pending set."""
+        self.write_state()
+        self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
+        self.assertIn(NO_PROGRESS, self.message(self.agy(antigravity_event(self.root)),
+                                                "reason", "continue"))
+        data = self.sidecar_data()
+        self.assertEqual((data["strikes"], data["pending"]), (1, OWNER))
+
+    def assert_human_turn_continues(self):
+        """The next stop is a human turn: it continues with strikes reset to 0."""
+        text = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
+        self.assertNotIn(NO_PROGRESS, text)
+        data = self.sidecar_data()
+        self.assertEqual((data["strikes"], data["pending"]), (0, OWNER))
+
+    def test_error_stop_clears_pending_before_human_turn(self):
+        self.unchanged_automatic_turn()
+        self.assert_stop(self.agy(antigravity_event(self.root, error="model error")))
+        data = self.sidecar_data()
+        self.assertEqual((data["strikes"], data["pending"]), (1, None))
+        self.assert_human_turn_continues()
+
+    def test_pause_and_resume_clears_pending(self):
+        self.unchanged_automatic_turn()
+        self.write_state(stop="paused", keep_sidecar=True)
+        self.assert_stop(self.agy(antigravity_event(self.root)))
+        self.assertIsNone(self.sidecar_data()["pending"])
+        self.write_state(keep_sidecar=True)
+        self.assert_human_turn_continues()
+
+    def test_owned_rejection_never_creates_sidecar(self):
+        self.write_state()
+        self.assert_stop(self.agy(antigravity_event(self.root, error="model error")))
+        self.write_state(stop="paused")
+        self.assert_stop(self.agy(antigravity_event(self.root)))
+        self.write_state(items=USER)
+        self.assert_stop(self.agy(antigravity_event(self.root)))
+        self.assertFalse(os.path.exists(self.sidecar))
+
+    def test_cleanup_leaves_other_sessions_and_events_alone(self):
+        content = json.dumps({"goal": None, "turns": 1, "key": None, "strikes": 0,
+                              "pending": "sess-other"})
+        for name, kwargs in (("error", {"error": "model error"}), ("idle", {})):
+            with self.subTest(name=name):
+                self.write_state(items=USER if name == "idle" else READY)
+                self.write_sidecar(content)
+                self.assert_stop(self.agy(antigravity_event(self.root, **kwargs)))
+                with open(self.sidecar, encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), content)
+        content = json.dumps({"goal": None, "turns": 1, "key": None, "strikes": 0,
+                              "pending": OWNER})
+        for name, owner, kwargs in (
+                ("non-owner", "sess-other", {}),
+                ("other event", OWNER, {"hook_event_name": "SubagentStop"}),
+                ("no conversation", OWNER, {"conversationId": "", "error": "model error"})):
+            with self.subTest(name=name):
+                self.write_state(owner=owner)
+                self.write_sidecar(content)
+                self.assert_stop(self.agy(antigravity_event(self.root, **kwargs)))
+                with open(self.sidecar, encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), content)
+
+
+class DevinTest(HostBase):
+    CONTINUE_KEY = ("reason", "block")
+
+    def devin(self, ev, env=None, cwd=None):
+        return self.run_host("devin", ev, env=env, cwd=cwd)
+
+    def project_env(self):
+        return host_env(DEVIN_PROJECT_DIR=self.root)
+
+    def control_output(self):
+        return self.devin(devin_event(), env=self.project_env())
+
+    def test_continue_exact_output(self):
+        self.write_state()
+        self.assertEqual(self.devin(devin_event(), env=self.project_env()),
+                         {"decision": "block", "reason": active_text(self.state)})
+
+    def test_non_owner_and_stop_set(self):
+        self.accepted()
+        self.write_state(owner="sess-other")
+        self.assert_stop(self.devin(devin_event(), env=self.project_env()))
+        self.write_state(stop="done")
+        self.assert_stop(self.devin(devin_event(), env=self.project_env()))
+
+    def test_wrong_event_name(self):
+        self.accepted()
+        for name in ("stop", "SubagentStop", "SessionEnd", None):
+            with self.subTest(name=name):
+                self.write_state()
+                self.assert_stop(self.devin(devin_event(hook_event_name=name),
+                                            env=self.project_env()))
+
+    def test_agent_id_key_rejects_even_when_null(self):
+        self.accepted()
+        for value in ("agent-1", None):
+            with self.subTest(value=value):
+                self.write_state()
+                self.assert_stop(self.devin(devin_event(agent_id=value), env=self.project_env()))
+
+    def test_roots_fall_back_from_env_to_process_cwd(self):
+        sub = os.path.join(self.root, "src")
+        os.mkdir(sub)
+        self.write_state()
+        out = self.devin(devin_event(), env=host_env(DEVIN_PROJECT_DIR=self.elsewhere,
+                                                     CLAUDE_PROJECT_DIR=self.root))
+        self.message(out, "reason", "block")
+        self.write_state()
+        self.message(self.devin(devin_event(), cwd=sub), "reason", "block")
+        self.write_state()
+        self.assert_stop(self.devin(devin_event(cwd=self.root)))
+
+    def test_two_valid_roots_choose_first(self):
+        self.write_state()
+        self.write_rival_state()
+        expected = {"decision": "block", "reason": active_text(self.state)}
+        self.assertEqual(self.devin(devin_event(), env=host_env(
+            DEVIN_PROJECT_DIR=self.root, CLAUDE_PROJECT_DIR=self.elsewhere)), expected)
+        self.write_state()
+        self.assertEqual(self.devin(devin_event(), env=host_env(
+            CLAUDE_PROJECT_DIR=self.root)), expected)
+
+    def test_session_start_output(self):
+        expected = {"hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": "[agent-loop] This session's ID is %s. Use it as the "
+                                 "owner: value when you create or take over an agent-loop "
+                                 "state file." % OWNER}}
+        ev = {"hook_event_name": "SessionStart", "session_id": OWNER, "source": "startup"}
+        self.assertEqual(self.devin(ev), expected)
+        self.write_state(owner="sess-other", stop="done")
+        self.assertEqual(self.devin(ev, env=self.project_env()), expected)
+        for value in ("", None, 7):
+            with self.subTest(value=value):
+                self.assert_stop(self.devin(dict(ev, session_id=value)))
+
+    def test_other_hosts_ignore_session_start(self):
+        ev = {"hook_event_name": "SessionStart", "session_id": OWNER, "cwd": self.root}
+        self.write_state()
+        self.assertIn("hookSpecificOutput", self.devin(ev))
+        for host in ("claude", "codex", "cursor", "antigravity"):
+            with self.subTest(host=host):
+                self.assert_stop(self.run_host(host, ev))
 
 
 if __name__ == "__main__":

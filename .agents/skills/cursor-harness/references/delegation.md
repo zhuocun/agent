@@ -1,15 +1,19 @@
 # Delegation
 
-Use this reference to dispatch subagents and external agent CLIs inside Cursor and verify their results. Run each delegate on a top-tier model suited to its role: never a mini or distilled variant, and never an oversized premium tier whose cost outruns its value for delegated work. Set effort and every other exposed parameter explicitly. Before launching an external CLI, confirm it is installed and authorized, read its `--help` for the non-interactive mode, and pick the model from its current model list.
+Use this reference to dispatch subagents and external agent CLIs inside Cursor and verify their results.
+
+**Model choice:** run each delegate on a top-tier model suited to its role: never a mini or distilled variant, and never an oversized premium tier above the top tier, whose cost outruns its value for delegated work. When no such model is available, use the strongest available model that is not an oversized premium tier, and tell the user. Set effort and every other exposed parameter explicitly.
+
+Before launching an external CLI, confirm it is installed and authorized, read its `--help` for the non-interactive mode, and pick the model from its current model list.
 
 ## Task-tool subagents (documented)
 
 - **Write a self-contained prompt.** A subagent sees neither the user's messages nor your earlier steps. Give it the goal, files and paths, constraints, what not to touch, exact deliverable, and final-message format. Put long or reusable briefs in a file and point the subagent to it.
-- **Background Task:** use `run_in_background: true` for the background vehicle in [background-work.md](background-work.md#choosing-the-vehicle). You cannot poll or await a background subagent. Its result arrives after your turn ends. Keep working or end the turn.
+- **Background Task:** use the Task tool's background option (`run_in_background: true` in its schema) for the background vehicle in [background-work.md](background-work.md#choosing-the-vehicle). Do not block on a background subagent; keep working or end the turn. Its result arrives after your turn ends, unless the surface includes background subagent results in the current turn. When your next step needs its progress before then, read its output under `~/.cursor/subagents/`.
 - **Parallel launch:** put independent Task calls in one message.
 - **Resume:** use a finished subagent's agent id for a follow-up, such as sending reviewer issues to the worker verbatim. Resuming a running subagent fails. Wait for its result first.
-- **Model:** pass a slug from the available model list that meets the rule above. An invalid slug fails the call. Use `inherit` only when the user asks for it.
-- **Cloud subagents:** `environment: cloud` gives each subagent its own VM and branch. Use cloud only when the user asks for it. Follow the user's instruction on whether to merge, check out, or ignore that branch.
+- **Model:** pass a slug from the available model list that meets **Model choice**. An invalid slug fails the call. Use `inherit` only when the user asks for it.
+- **Cloud subagents:** from a local agent session, `environment: cloud` gives each subagent its own VM and branch. Use cloud only when the user asks for it. Follow the user's instruction on whether to merge, check out, or ignore that branch.
 - **Descriptions:** give each subagent a concrete, distinct visible name, such as "Review T3 patch r2". Reuse the name in the ledger.
 
 ## External agent CLIs (Codex, Devin, Cursor CLI, Claude Code)

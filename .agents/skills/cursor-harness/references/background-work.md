@@ -14,19 +14,17 @@ Use this reference to choose a launch vehicle, collect completion signals, and w
 
 ## Completion signals and wake-ups
 
-An **end marker** is a file written after a process exits that records its exit code. A **waiter** is a background shell job that exits when an end marker appears or its tmux session disappears.
-
 | Launch | Tracked by Cursor? | Completion reaches you via | Status |
 | --- | --- | --- | --- |
 | Shell call that finishes within `block_until_ms` | yes | the call result | documented |
-| Shell call with `block_until_ms: 0`, or one that outlives `block_until_ms` | yes, as a background job | end-of-turn notification for jobs that finish during a turn; `AwaitShell` | documented; no-wake behavior below verified 2026-10-12 |
+| Shell call with `block_until_ms: 0`, or one that outlives `block_until_ms` | yes, as a background job | end-of-turn notification for jobs that finish during a turn; `AwaitShell` | documented; no-wake behavior verified 2026-10-12 (see **After the turn ends**) |
 | `tmux new-session -d`, `nohup`, `setsid`, `cmd &` | no: the launch command returns at once | nothing unless you add a waiter | verified 2026-10-12 |
 | Task subagent with `run_in_background: true` | yes | [result delivery](delegation.md#task-tool-subagents-documented) | documented |
 | `subscribe_timer` (Cloud Agent) | yes | a follow-up prompt that starts a new turn | verified 2026-10-12 |
 
-**After the turn ends — verified 2026-10-12:** only a timer, a background Task subagent, or a user message wakes an idle agent. A background shell job or waiter that finishes then does not start a turn.
+**After the turn ends — verified 2026-10-12:** a background shell job or waiter that finished after the turn ended did not start a turn; timer prompts and background Task subagent results did.
 
-**Unverified:** whether background shell jobs survive session reclamation. Treat a tmux run plus end marker as the source of truth.
+**Documented for the IDE agent:** background shells keep running between turns, and archiving the chat stops them. **Unverified:** whether background shell jobs survive session reclamation. Treat a tmux run plus end marker as the source of truth.
 
 ## Choosing the vehicle
 
@@ -39,17 +37,13 @@ Run work in the background when it takes more than a few minutes or is independe
 | Must survive the session, needs a human to attach, or is an agent CLI run (Codex, Devin, Cursor CLI, Claude Code), a deployment, or a long regression | tmux run with an end marker plus a waiter |
 | Analysis, review, or coding a subagent can do | background Task subagent ([delegation.md](delegation.md)) |
 
-Pair every detached run with a waiter.
-
 ## Wait routine
 
-A **blocking wait** uses `AwaitShell` to wait for output from a waiter. A **safety timer** is a `subscribe_timer` subscription that prompts an idle agent to run the ledger inventory.
+**Evidence — verified 2026-10-12:** a blocking wait reacted within seconds of completion; a safety timer reacted only at its next fire, subject to the delivery delays in [safety timers](#safety-timers).
 
-**Pair the mechanisms — verified 2026-10-12:** keep a safety timer subscribed while any run is going. While independent ledger work exists, do that work. When no independent work remains, use a blocking wait. For one detached run, wait on its waiter. For two or more detached runs, use the [any-end waiter](#any-end-waiter). A background shell job is tracked by Cursor and needs no extra waiter: wait on it by job id with `AwaitShell` ([mechanics](#shell-job-mechanics-documented)) when no detached run is going, and otherwise block on the detached runs' waiter and collect the job at the next inventory. Background Task subagents follow [result delivery](delegation.md#task-tool-subagents-documented) instead. A blocking wait reacts within seconds of completion. A safety timer reacts at its next fire, subject to the delivery delays in [safety timers](#safety-timers).
+**Interruptions — verified 2026-10-12:** a user message released a blocking wait early.
 
-**After an interruption — verified 2026-10-12:** a user message releases a blocking wait early. Handle the message through the [operating loop](../SKILL.md#operating-loop), then run the inventory again. Start a fresh waiter over the remaining runs and resume the blocking wait in the same turn. Use an any-end waiter when several runs remain. Leave only the safety timer if the user asked you to stop working or the runs will take much longer than the timer interval.
-
-**Queue check — documented:** before a long blocking wait on a Cloud Agent, check `cursor-cloud.get-message-queue`. Handle queued user messages first and defer slow verification while messages remain queued.
+**Queue check — unverified:** before a long blocking wait on a Cloud Agent, check `cursor-cloud.get-message-queue` if `GetDynamicTools` lists it, and handle queued user messages first.
 
 ## Polling
 
@@ -63,7 +57,7 @@ Poll only when your next step depends on that job or it needs close monitoring, 
 - `AwaitShell` polls one job by id per call. `pattern` blocks until an RE2 regex matches the output body. It never matches the header or footer. A call blocks for at most 119 minutes.
 - Without `shell_id`, `AwaitShell` is a plain sleep. Use it for agent-side sleeps instead of a shell `sleep` call.
 - If you observe a job's end yourself, for example after killing it, call `AwaitShell` once to consume the stale notification.
-- Size waits in slices of 60–270 seconds or 1200 seconds and longer. Avoid round 5-minute waits, which miss the prompt cache.
+- Size each wait well under or well over the model's prompt-cache lifetime; a wait just past it pays for a cache miss without the saving of a long wait. For an unknown lifetime or a 5-minute one (Anthropic's default), use slices of 60–270 seconds or 1200 seconds and longer.
 - Never poll a job the tool result says the user backgrounded manually.
 
 ## tmux run plus waiter (verified 2026-10-12)
@@ -111,7 +105,7 @@ After launch, confirm each leg's log exists and shows the expected model. Copy r
 
 ## Any-end waiter
 
-An **any-end waiter** is an extra background shell job that exits as soon as any watched end marker appears:
+Any-end waiter script:
 
 ```sh
 while :; do
@@ -122,7 +116,7 @@ while :; do
 done
 ```
 
-Use `AwaitShell` with `pattern: ANY-END`. When the waiter finishes, process that run. Start a fresh waiter over the remaining runs, following the [wait routine](#wait-routine).
+Use `AwaitShell` with `pattern: ANY-END`. When the waiter finishes, process that run, then wait on the remaining runs as [wait efficiently](../SKILL.md#5-wait-efficiently) describes.
 
 Keep each run's own waiter to detect `SESSION-GONE-NO-END`. If the any-end waiter is the only waiter, add `tmux has-session` checks.
 
@@ -130,22 +124,22 @@ Keep each run's own waiter to detect `SESSION-GONE-NO-END`. If the any-end waite
 
 ## Safety timers
 
-Use `cursor-subscriptions.subscribe_timer` on Cloud Agent. Follow the [wait routine](#wait-routine) for when a safety timer must remain armed.
+Use `cursor-subscriptions.subscribe_timer` on Cloud Agent. [Wait efficiently](../SKILL.md#5-wait-efficiently) says when a safety timer must stay subscribed.
 
 **API — documented:** use `once: true` with `delaySeconds` for a one-shot safety timer. Use `cron` or `delaySeconds` for a recurring safety timer.
 
 **Behavior — verified 2026-10-12:** a safety timer enqueues a prompt that runs when the agent is free. The subscription name deduplicates timers, and the prompt is frozen at creation.
 
 - Name the safety timer after its ledger entry.
-- Set its prompt to say **"run the inventory from the ledger"**. Keep current end markers and next actions in the ledger.
-- For a known end time, use a one-shot safety timer at the expected end plus a margin. When the end is uncertain, use a recurring safety timer, for example every 20 minutes.
+- Keep current end markers and next actions in the ledger rather than in the prompt.
+- Set a one-shot safety timer at the expected end plus a margin, and a recurring one at an interval such as 20 minutes.
 - Choose an interval longer than a typical blocking wait, or use a one-shot safety timer re-armed at turn end.
 - If a prompt becomes stale, replace the subscription with `unsubscribe`, then subscribe again.
 - For subscription inventory and cleanup, follow [platform-tools.md](platform-tools.md#subscriptions-cursor-subscriptions-documented). Remove remaining safety timers when no run is left.
 
 **Queued prompts — verified 2026-10-12:** a recurring safety timer fired at 21:40 during a long blocking turn. Cursor delivered its prompt at 23:13, after the turn ended and after unsubscribe. Every action in the prompt was already done. A recurring 15-minute safety timer fired five times during one turn. Cursor delivered all five prompts together at turn end, again after unsubscribe.
 
-Treat a delivered timer prompt as a request for inventory. Check the ledger and end markers, skip completed actions, and compare `firedAt` with ledger timestamps. Run one inventory for a batch of prompts.
+When a timer prompt arrives, check the ledger and end markers, skip completed actions, and compare `firedAt` with ledger timestamps.
 
 **First recurring fire — unverified (one observation, 2026-10-12):** a recurring `subscribe_timer` with `delaySeconds: 1200` first fired after about 400 seconds. It arrived after a separate one-shot timer fired and the agent became idle. The cause is unknown. Possible causes are phase alignment or delivery when the agent is free. Let inventory tolerate an early fire. Use a one-shot safety timer when timing matters.
 

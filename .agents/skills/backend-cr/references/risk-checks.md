@@ -38,9 +38,8 @@ Use a section only when its trigger appears in the change, and only the checks t
 - **Existing caches.** The key includes every input that changes the result, the caller's scope included. Distinguish cached success, "not found", dependency failure, expired and approved-stale entries. Check invalidation after writes and rollbacks, and that a slow fill cannot overwrite newer data. A shared cache must not replace a required per-request authorization check. Do not recommend a cache for request-local reuse.
 - **Offline data investigation.** When an authorized investigation reads stored data, keep invalid raw values without widening valid domain states, record each row anomaly and continue, and stop on connection failure or an unknown decisive fact. Do not repair investigated data without permission.
 
-## Data Protection and Technical Operations
+## Data Protection
 
-- **Values reaching technical operations.** Trace client values into SQL, shell commands, file paths, URLs, templates and deserialization. Each must arrive bound, escaped or checked against an allowed set under the real execution rules; a value pasted into statement text breaks on quotes and changes the statement. Validation elsewhere does not make it safe there. A dynamic target (file path, outbound URL, class name) must come from an allowed set. Do not demand blanket sanitization of ordinary fields.
 - **Personal and secret data.** Trace it through responses, logs, caches, messages, samples, backups and deletion. A debug setting must not disable peer authentication or transport encryption; secrets are replaceable, not hard-coded. Use the project's classification and mechanisms; do not invent cryptography.
 
 ## Migration, Release and Configuration

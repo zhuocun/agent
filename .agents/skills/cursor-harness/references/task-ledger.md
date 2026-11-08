@@ -4,11 +4,9 @@ Use this reference to register work, choose a ledger location, record states, an
 
 ## Registration
 
-Before starting work or launching a job, add a ledger entry. Include user asks other than a question you answer in the same turn, subagents, background shell jobs, tmux runs, scheduled safety timers, and work waiting on the user. Before launching a wave, register every member of the wave, then launch.
+Register user asks other than a question you answer in the same turn, subagents, background shell jobs, tmux runs, scheduled safety timers, and work waiting on the user. Before launching a wave, register every member of the wave, then launch.
 
-Each running ledger entry names its completion signal and the next action on completion. Signals include a shell job, an end marker, a subagent result, or a safety timer. A run without a live signal is a ledger defect. Give it a waiter or safety timer, or poll it now.
-
-Quote the user's exact words for new tasks and acceptances.
+Completion signals include a shell job, an end marker, a subagent result, a subscription event, or a safety timer.
 
 ## Where to keep it
 
@@ -45,10 +43,9 @@ Redeploying or reconfiguring a deployed environment invalidates a run against it
 
 ## States
 
-Use `queued → running → verifying → done` for work. Other states are `blocked` (name the blocker), `waiting-user` (record the exact question), `accepted` (the user accepted), `cancelled` (record who cancelled and why), and `failed` (record evidence and the decision taken).
+Use `queued → running → verifying → done` for work and `armed → done` for `timer` entries. Other states are `blocked` (name the blocker), `waiting-user` (record the exact question), `accepted` (the user accepted), `cancelled` (record who cancelled and why), and `failed` (record evidence and the decision taken).
 
-- Mark a ledger entry `done` only with evidence: exit code and artifact for runs, a result verified as [verification](delegation.md#verifying-delegated-results) describes for subagents and external agent CLIs, and an observable outcome for tasks.
-- Keep a task that needs user sign-off `verifying` or `waiting-user` until the user accepts, and quote the acceptance as [registration](#registration) requires.
+Keep a task that needs user sign-off `verifying` or `waiting-user` until the user accepts.
 
 ## Handling interruptions
 
@@ -60,7 +57,7 @@ After the [turn-start inventory](../SKILL.md#2-turn-start-inventory-before-anyth
 4. For a scope change, let a correct running job finish and add a follow-up ledger entry for the change. Stop the job only if it is wrong or the user tells you to stop the job itself; a user who tells you to stop working leaves the runs going.
 5. When the user switches topic, retain the old ledger entries in their real states. Mention them in turn-end reports until they close or the user drops them.
 
-If the message releases a blocking wait, follow the [wait routine](background-work.md#wait-routine).
+If the message releases a blocking wait, follow [wait efficiently](../SKILL.md#5-wait-efficiently).
 
 ## Reporting
 

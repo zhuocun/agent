@@ -1,14 +1,21 @@
 ---
 name: cursor-harness
 description: >-
-  Cursor Harness operating manual: never lose a task, never block on a long process. Use whenever you run as an agent inside Cursor (IDE agent, Cloud Agent, or self-hosted worker) and the work involves more than one task at a time, delegating to Task-tool subagents or external CLIs, background shells, tmux sessions, deployments or test runs longer than a few minutes, follow-up messages that arrive mid-work, or restoring open tasks and runs from the ledger after a context compaction. Covers the task ledger, turn-start and turn-end routines, background-job waiting, subagent delegation, and Cursor tool quirks; the references directory holds topic files that grow over time. Do not use for a single short request that finishes inside one turn with no background work, or inside agents that do not run in Cursor.
+  When you are running as an agent inside Cursor (IDE agent, Cloud Agent, or self-hosted worker), track every task, subagent and long-running job to completion through follow-up messages and context compaction. Use when the work involves more than one task at a time, delegating to Task-tool subagents or external CLIs, background shells, tmux sessions, deployments or test runs longer than a few minutes, follow-up messages that arrive mid-work, or restoring open tasks and runs from the ledger after a context compaction. Covers the task ledger, turn-start and turn-end routines, background-job waiting, subagent delegation, and Cursor tool quirks. Do not use for a single short request that finishes inside one turn with no background work, or when you are not running inside Cursor, including when Cursor is only the subject of the request, such as a brief, prompt or plan for a Cursor agent to run later.
 ---
 
 # Cursor Harness
 
-Use this operating loop inside Cursor's agent harness to track every task, watch long processes, handle interruptions, and close completed work. Cursor provides shell jobs, subagents, timers, and dynamic tools. Detached processes are invisible to the harness, and compaction drops detail.
+Use this operating loop inside Cursor's agent harness to track every task, watch long processes, handle interruptions, and close completed work. Cursor provides shell jobs, subagents and dynamic tools, and on Cloud Agent, timers. Detached runs are invisible to the harness, and compaction drops detail.
 
 Priority order, highest first: **no task is lost → no finished job goes unnoticed → never sit idle on a wait when other work exists → minimal tool and token cost.** Resolve conflicts in favor of the higher priority.
+
+## Rules for the whole task
+
+- **Register first.** Before you start work you owe, or launch a job, subagent or timer, add a ledger entry for it ([what to register](references/task-ledger.md#registration)). Each running entry names its completion signal and the next action on completion. A running entry without a live signal is a defect: give it a waiter or safety timer, or poll it now.
+- **Pair every detached run with a waiter.** A **detached run** is a process whose launch command returns at once (`tmux new-session -d`, `nohup`, `setsid`, `cmd &`), so Cursor does not track it. Give it an **end marker**, a file written after the process exits that records its exit code, and a **waiter**, a background shell job that exits when the end marker appears or the run's tmux session disappears.
+- **Mark a ledger entry `done` only with evidence:** exit code and artifact for runs, a result verified as [verification](references/delegation.md#verifying-delegated-results) describes for subagents and external agent CLIs, and an observable outcome for tasks.
+- **Quote the user's exact words** for new tasks and acceptances.
 
 ## Operating loop
 
@@ -21,7 +28,7 @@ Keep all work you own in one durable ledger file. A **ledger entry** records one
 At the start of every turn, including a follow-up message or a timer prompt:
 
 1. Read the ledger. After a compaction, treat each claim in the summary as unverified until the ledger or ground truth (git state, PRs, CI, the files themselves) confirms it.
-2. Collect completion signals: shell job notifications, end markers, `tmux ls`, and delivered subagent results.
+2. Collect completion signals: shell job notifications, end markers, `tmux ls`, delivered subagent results, and, where subscription tools exist, `list_subscriptions`.
 3. Process completed work: record it, then verify the result and trigger the next step before handling the new message, unless the verification needs a long-running check, in which case handle the new message first.
 
 ### 3. Classify every new message before acting
@@ -34,20 +41,20 @@ Choose a vehicle with [background work](references/background-work.md#choosing-t
 
 ### 5. Wait efficiently
 
-Only a timer, a background Task subagent, or a user message wakes an idle agent, and a user message cuts a blocking wait short. So, while any run is going:
+An idle agent wakes only on a user message or on an event Cursor delivers as a new turn, such as a safety timer prompt, a subscription event or a background Task subagent's result. Do not rely on a background shell job or waiter that finishes after your turn ends to start a turn. A **blocking wait** is an `AwaitShell` call on a job; a user message cuts it short. So, while any run is going:
 
-- Do independent ledger work first. When none remains, block on the detached run's waiter, or on an **any-end waiter** over every running end marker when two or more detached runs are going, or, when only background shell jobs are running, on a job by id.
-- Keep a **safety timer** subscribed, one-shot at a known end time or recurring when the end is uncertain, whose prompt says "run the inventory from the ledger". Its prompts can arrive late and batched, so treat each as an inventory request.
-- After an interruption, handle the message, then start a fresh waiter and block again in the same turn.
+- Do independent ledger work first. When none remains, block with `AwaitShell`: on the waiter when one detached run is going; on an any-end waiter when two or more are going; or on a job by id when only background shell jobs are running. An **any-end waiter** is one background shell job that exits as soon as any watched end marker appears. Collect other background shell jobs and Task subagent results at the next inventory.
+- Where a timer tool exists, keep a **safety timer** subscribed: a timer subscription whose prompt says "run the inventory from the ledger", one-shot at a known end time or recurring when the end is uncertain. Its prompts can arrive late and batched, so treat each batch as one inventory request.
+- After an interruption, handle the message and run the inventory. Then start a fresh waiter over the remaining runs and block again in the same turn, unless the user asked you to stop working, or a safety timer covers the remaining runs and they will take much longer than its interval; in those cases end the turn and leave the runs going.
 
-Details, exceptions, and evidence: [wait routine](references/background-work.md#wait-routine).
+Scripts and settings: [tmux run plus waiter](references/background-work.md#tmux-run-plus-waiter-verified-2026-10-12), [any-end waiter](references/background-work.md#any-end-waiter), [safety timers](references/background-work.md#safety-timers); evidence and the Cloud Agent queue check: [wait routine](references/background-work.md#wait-routine).
 
 ### 6. Turn end: leave nothing unwatched
 
 Before your final message:
 
 1. Update the ledger.
-2. Confirm every running entry has a live completion signal ([registration](references/task-ledger.md#registration)) and a safety timer covers it ([wait routine](references/background-work.md#wait-routine)), or, where no timer tool exists, that the report says nothing collects the run until the user's next message.
+2. Confirm every running entry has a live completion signal and, where a timer tool exists, a safety timer covers it; where no timer tool exists, say in the report that nothing collects the run until the user's next message.
 3. Report open work using [ledger reporting](references/task-ledger.md#reporting).
 
 ## References
@@ -67,17 +74,16 @@ Load the topic file when the situation arises.
 When you confirm a reusable Cursor Harness fact or fix:
 
 - Put it in the topic file it belongs to. If none fits, put it in `references/field-notes.md`, using its entry format.
-- When three or more field notes share a topic, move them into the matching reference file, or create `references/<topic>.md` and add it to the table above.
+- When three or more field notes share a topic, move them into the matching reference file, or create `references/<topic>.md` and add it to the table under [References](#references).
 - Mark each fact as **verified** (you ran it, with date), **documented** (from Cursor's tool descriptions or docs), or **unverified**. Upgrade or delete entries when evidence changes. Never keep contradictory statements.
 - Keep the skill machine-agnostic and project-agnostic: no absolute paths, usernames, session IDs, ports, proxy addresses, product codenames, or credentials. Keep project-specific lessons in the project's memory.
-- Keep this file the short loop. Put detail in references.
 
 ## Self-check
 
-- [ ] Every ask that leaves work owed, and every subagent, job, run, and timer I own, has a ledger entry with a completion signal and a next action.
+- [ ] Every ask that leaves work owed, and every subagent, job, run, and timer I own, got a ledger entry before I started or launched it, and every running entry names its completion signal and next action.
 - [ ] I ran the turn-start inventory before handling the new message.
-- [ ] No detached process runs without a waiter.
-- [ ] While runs were going, a safety timer was subscribed, and after each interruption I started a fresh waiter over the remaining runs, unless the wait routine let me leave only the safety timer.
-- [ ] Nothing was marked done without evidence; acceptances quote the user.
-- [ ] My final message lists what is still running, where to look, and what happens next.
+- [ ] Every detached run has an end marker and a waiter.
+- [ ] While runs were going, a safety timer was subscribed wherever a timer tool existed, and after each interruption I started a fresh waiter over the remaining runs and blocked again, or ended the turn because the user asked me to stop working or a safety timer covered the remaining runs and they would take much longer than its interval.
+- [ ] Nothing was marked done without evidence; new tasks and acceptances quote the user's exact words.
+- [ ] My final message groups open entries as running, waiting on you, and queued, and for running work says where to look and what happens on completion.
 - [ ] New reusable facts went to the right reference with a status label.

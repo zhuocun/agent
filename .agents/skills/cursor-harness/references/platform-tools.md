@@ -17,7 +17,7 @@ Use this reference for Cursor tools and platform rules during long, concurrent w
 
 ## Cloud Agent diagnostics (`cursor-cloud`, documented)
 
-- `get-message-queue`: pending user follow-ups; see the [wait routine](background-work.md#wait-routine).
+- `get-message-queue` (unverified; absent from Cursor's published tool list): pending user follow-ups, when `GetDynamicTools` lists it; see the [wait routine](background-work.md#wait-routine).
 - `run-info`: run identity, branch, model, and run URL.
 - `get-events`: run lifecycle events, including otherwise silent MCP authentication failures.
 - `list-cloud-agents` and `batch-fetch-details`: other runs and their transcripts. Read large transcripts through a subagent, never directly.
@@ -26,9 +26,9 @@ Use this reference for Cursor tools and platform rules during long, concurrent w
 
 - `subscribe_timer`: one-shot or recurring safety timers; see [background-work.md](background-work.md#safety-timers).
 - `subscribe_slack_thread`, `subscribe_slack_channel`, `subscribe_linear_issue`, and `subscribe_linear_comment`: event-driven wake-ups.
-- `list_subscriptions` and `unsubscribe` (safety-timer use **verified 2026-10-12**): check subscriptions during turn-start inventory, and remove each subscription when its ledger entry closes.
+- `list_subscriptions` and `unsubscribe` (safety-timer use **verified 2026-10-12**): remove each subscription when its ledger entry closes.
 
-For Slack or Linear events, use the matching subscription above rather than a safety timer; for GitHub or CI events, do so only if `GetDynamicTools` lists such a subscription.
+For Slack or Linear events, use the matching Slack or Linear subscription tool rather than a safety timer; for GitHub or CI events, use a subscription only if `GetDynamicTools` lists one.
 
 ## Cloud Agent and self-hosted rules that affect bookkeeping
 

@@ -2,6 +2,16 @@
 
 Use this reference to choose a launch vehicle, collect completion signals, and wait without losing work.
 
+- [Completion signals and wake-ups](#completion-signals-and-wake-ups)
+- [Choosing the vehicle](#choosing-the-vehicle)
+- [Wait routine](#wait-routine)
+- [Polling](#polling)
+- [Shell job mechanics (documented)](#shell-job-mechanics-documented)
+- [tmux run plus waiter (verified 2026-10-12)](#tmux-run-plus-waiter-verified-2026-10-12)
+- [Any-end waiter](#any-end-waiter)
+- [Safety timers](#safety-timers)
+- [Hangs](#hangs)
+
 ## Completion signals and wake-ups
 
 An **end marker** is a file written after a process exits that records its exit code. A **waiter** is a background shell job that exits when an end marker appears or its tmux session disappears.

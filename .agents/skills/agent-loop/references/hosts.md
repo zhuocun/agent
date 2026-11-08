@@ -4,6 +4,14 @@ Use the section for the current host and mode. Where continuation, the owner-ID 
 
 For Codex, Cursor, Antigravity and Devin, each live result below holds only for the CLI version, mode and flags it names, run with a fast model at low reasoning effort. Still unverified live: all IDE behavior; interactive-CLI continuation on Codex, Antigravity and Devin; host continuation caps above the observed consecutive counts, and every cap's configuration route and reset behavior; child-agent identity; custom IDs; and each further item a host section marks unverified.
 
+- [Registration command](#registration-command)
+- [Hook interface](#hook-interface)
+- [Claude Code](#claude-code)
+- [Codex](#codex)
+- [Cursor](#cursor)
+- [Antigravity](#antigravity)
+- [Devin](#devin)
+
 ## Registration command
 
 Use Python 3.8 or newer; the scripts need only the standard library. Set `SKILL_DIR` to the resolved absolute directory containing this skill's `SKILL.md`, `SCOPE` to the user or project scope chosen under pass 2's **Host** rule, and `WORKSPACE` to the workspace root.

@@ -21,6 +21,12 @@ other shells or launchers, use their executable lookup, child environment and
 stdin-close/null-input equivalents. Do not paste POSIX redirection or variable
 assignment into a different shell unchanged.
 
+- [Rules for every CLI](#rules-for-every-cli)
+- [Claude Code: `claude -p`](#claude-code-claude--p)
+- [Codex: `codex exec`](#codex-codex-exec)
+- [Cursor: `agent -p`](#cursor-agent--p)
+- [Devin: `devin -p`](#devin-devin--p)
+
 ## Rules for every CLI
 
 - **Availability**: resolve and identify the executable in the child's runtime

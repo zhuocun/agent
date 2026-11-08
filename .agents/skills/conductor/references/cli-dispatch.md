@@ -1,12 +1,14 @@
 # CLI dispatch hygiene
 
-Use this reference when running a headless CLI as a subagent. `SKILL.md` assigns
-the source, model family, effort and speed scope; this file carries that
-assignment into the invocation and checks the result. Apply the common guards
-and the selected source's guidance on every dispatch.
+Use this reference when running a headless CLI as a subagent. `SKILL.md` and
+`dispatch.md` assign the source, model family, effort and speed scope; this file
+carries that assignment into the invocation and checks the result. Apply the
+common guards and the selected source's guidance on every dispatch: headless
+spawns fail in ways an interactive terminal never shows (stdin/EOF, flag order,
+model IDs, effort flags, auth checks, output capture).
 
-Discover capabilities in the dispatch environment before using the source
-guidance below. Confirm the installed product, its supported platform and
+Discover capabilities in the dispatch environment before using the guidance in
+each source's section of this file. Confirm the installed product, its supported platform and
 provider, current help/configuration schema, and a fresh applicable model
 catalog. Use a flag, setting, output field or sandbox mechanism only when that
 build and host support it. These are dispatch mechanisms, not requirements to
@@ -14,7 +16,7 @@ install a CLI or change persistent configuration. A catalog or configuration
 records availability or selection; it does not prove which model or serving
 tier handled a turn.
 
-Shell commands below are **POSIX illustrations**, not universal command lines.
+Shell commands in this file are **POSIX illustrations**, not universal command lines.
 Replace placeholders and quote literal prompts, paths and JSON/TOML values for
 the actual shell. Prefer an argument-vector process API when available. In
 other shells or launchers, use their executable lookup, child environment and
@@ -31,19 +33,16 @@ assignment into a different shell unchanged.
 
 - **Availability**: resolve and identify the executable in the child's runtime
   (`command -v` in a POSIX shell), then check platform support and a supported
-  credential route using that invocation's environment, provider and settings.
-  A binary on the parent machine does not establish access in a remote host,
-  container or other runtime. Saved-login status alone does not validate or rule
-  out per-run credentials. Diagnose credential and transport failures separately.
-  Retry a failed catalog request through an already authorized network or proxy
-  route where available. Treat a family as absent only when a successfully
-  retrieved applicable catalog contains no required top-tier model. Skip
-  unavailable sources in the family's order; never substitute a forbidden tier.
+  credential route using that invocation's environment, provider and settings,
+  as **Subagent sources** in `dispatch.md` requires. A binary on the parent
+  machine does not establish access in a remote host, container or other
+  runtime. Saved-login status alone does not validate or rule out per-run
+  credentials.
 - **Prompt and EOF**: pass literal prompt text as one argument and close unused
   stdin with the launcher's supported mechanism (`< /dev/null` in POSIX).
   Do not interpolate a brief as shell code. An open pipe can leave the child
-  waiting for EOF. For a long brief, use the source's supported file/stdin route
-  below and close that stream after the input. Put the prompt directly after the
+  waiting for EOF. For a long brief, use the source's supported file/stdin route,
+  given in its section of this file, and close that stream after the input. Put the prompt directly after the
   print flag, after `--`, or before any multi-value flag; Claude's
   `--allowedTools` and `--disallowedTools` can swallow a following prompt.
 - **Configuration and environment**: discover the effective configuration roots,
@@ -63,18 +62,19 @@ assignment into a different shell unchanged.
   version and tier; a bare family or partial name such as `gpt` does not
   guarantee tier, effort or speed. Spell effort exactly and check the selected
   model's support. When the assigned level is missing, use the highest supported
-  level below it, as **Effort limits** in `SKILL.md` requires. If an ID is
+  level below it, as **Effort limits** in `dispatch.md` requires. If an ID is
   rejected, select the next-newest listed ID of the same family and tier; never
   let the CLI choose its default.
-- **Speed**: apply **Speed modes** in `SKILL.md` to select Standard, Fast or
+- **Speed**: apply **Speed modes** in `dispatch.md` to select Standard, Fast or
   Ultrafast from the user's explicit scope and current source support. A Fast
   control does not establish Ultrafast support. Saved settings and defaults can
   affect headless runs; explicitly carry the authorized request without changing
   the assigned model, family, source or effort. If no documented Ultrafast control
-  is verified for a source below, treat Ultrafast as unavailable there.
+  is verified in a source's section of this file, treat Ultrafast as unavailable
+  there.
 - **Reporting**: report each run in the one-line form of **Reporting** in
-  `SKILL.md`, from what the invocation carried. Run records and catalog labels
-  below help confirm that the run used the intended model, effort and request;
+  `dispatch.md`, from what the invocation carried. Run records and catalog labels
+  in each source's **Output and verification** help confirm that the run used the intended model, effort and request;
   the report never claims a serving tier from a label.
 - **Output and completion**: capture the final answer and check the exit status,
   stderr and terminal outcome; ordinary-looking text can describe a failed run.
@@ -132,12 +132,12 @@ supported `CLAUDE_CONFIG_DIR` override rather than assuming a home location.
   argument. Keep the prompt before multi-value tool flags.
 - **Model**: `opus` selects the Opus version recommended by the installed build,
   subject to environment overrides and restrictions. Verify it is the newest
-  version of the top-tier line **Tiers.** defines, today Opus; otherwise pin the
+  version of the top-tier line **Tiers.** in `dispatch.md` defines; otherwise pin the
   full supported ID from `/model` or the model configuration reference.
   `ANTHROPIC_DEFAULT_OPUS_MODEL` repoints the alias; cloud providers can map it
   differently, so pin their full ID for that line. Do not use `best`,
   `default`, `opusplan`, `sonnet`, `haiku`, `fable` or any other alias or ID
-  for a tier **Tiers.** forbids.
+  for a tier **Tiers.** in `dispatch.md` forbids.
 - **Effort**: where exposed, pass `--effort <level>` and unset
   `CLAUDE_CODE_EFFORT_LEVEL` for the child or set it to the same level, because
   it overrides the flag. Check stderr and effective settings: builds can ignore
@@ -185,10 +185,6 @@ supported `CLAUDE_CONFIG_DIR` override rather than assuming a home location.
   Interactive `/fast` saves a home setting. An ordinary local non-interactive
   run outside a cloud session requires its own settings opt-in, but use the off
   switch on every out-of-scope run rather than depending on that gate.
-- **Native Fast dispatch**: custom frontmatter, `--agents` JSON and `Workflow`
-  options have no per-agent Fast field. Children copy the session Fast flag.
-  Use `claude -p` with Fast on for in-scope roles, and with the off switch for
-  out-of-scope roles when the parent is fast, as `SKILL.md` requires.
 - **Output and verification**: plain `-p` prints final text; JSON puts it in
   `.result`. Check exit status before accepting it. For current-invocation
   model evidence, capture `--output-format stream-json --verbose` and read
@@ -230,11 +226,11 @@ before relying on a sandbox mode.
   `--skip-git-repo-check`.
 - **Model**: always pass `-m` because omission uses effective configuration and
   built-in defaults. Pin the newest full ID of the top-tier line **Tiers.**
-  defines, today Sol, from the current launcher, interactive `/model` picker or
+  in `dispatch.md` defines, from the current launcher, interactive `/model` picker or
   fresh applicable account catalog; no family alias is documented.
   `codex debug models --bundled` and the documentation's Models page describe
   capabilities, not account access. Never pick Astra, Luna, `-mini` or any
-  other model **Tiers.** forbids. A failed fetch or bundled fallback does not
+  other model **Tiers.** in `dispatch.md` forbids. A failed fetch or bundled fallback does not
   prove account unavailability; only a successful applicable catalog lacking
   that line establishes that the family is absent.
 - **Effort**: explicitly set the assigned supported level with
@@ -269,30 +265,21 @@ before relying on a sandbox mode.
 - **Speed selection**: keep the same model ID. Where the installed schema and
   selected provider support these keys, request Fast per run with
   `-c service_tier=fast -c features.fast_mode=true`, Ultrafast with
-  `-c service_tier=ultrafast`, and Standard with `-c service_tier=default`.
+  `-c service_tier=ultrafast -c features.ultrafast_mode=true`, and Standard with
+  `-c service_tier=default`.
   The [speed reference](https://learn.chatgpt.com/docs/agent-configuration/speed)
   describes Ultrafast availability in Work and Codex; the
   [API Ultrafast reference](https://developers.openai.com/api/docs/guides/ultrafast-mode)
   documents `service_tier=ultrafast` for supported models. Neither establishes
-  availability for this account, provider or build. Do not infer an Ultrafast
-  feature flag from `features.fast_mode`, or use the `ultra` effort to select it.
+  availability for this account, provider or build. `features.fast_mode` and
+  `features.ultrafast_mode` gate their own modes independently; do not use the
+  `ultra` effort to select Ultrafast.
   If the supported interface differs, use its verified equivalent; without one,
-  apply **Speed modes** in `SKILL.md`. Do not substitute `flex`.
+  apply **Speed modes** in `dispatch.md`. Do not substitute `flex`.
   Check effective settings, profiles, feature gates, managed restrictions and
   the model's advertised tiers; explicitly select the required tier on new and
   resumed runs. Do not rely on interactive `/fast` storage or TUI defaults to
   configure exec. An omitted service tier can inherit Project Fast.
-- **Native speed dispatch**: use native dispatch only when an explicit request
-  setting, host request contract or verified inheritance establishes the role's
-  assigned requested tier. Set exposed model and effort parameters and inspect
-  fork restrictions. Capability advertising alone is insufficient. Verified
-  inheritance that matches the assignment can carry it without a separate
-  tier selector. Otherwise use exec with explicit tier settings, and
-  independently request standard for an out-of-scope role if native dispatch
-  would select Fast or Ultrafast. A model list advertising Ultrafast and a
-  launcher exposing only model and effort do not establish an Ultrafast request.
-  Verify the current host rather than assuming
-  root-tier inheritance or overwrite behavior.
 - **Output and verification**: progress goes to stderr; stdout and
   `-o`/`--output-last-message` contain the final message. `--json` emits JSONL;
   `--output-schema <file>` requests a final answer matching a JSON Schema.
@@ -325,7 +312,7 @@ to discover active global and project settings, including supported
   the native subagent documentation's fallback behavior. A saved config model
   can be replaced by an allowed model, so explicit selection matters. Check
   the init event's display name against the requested family/version, then
-  check serving evidence as described below.
+  check serving evidence as its **Output and verification** describes.
 - **Effort**: select an exact listed effort variant when the CLI exposes no
   separate effort flag; its ID carries effort and Max Mode. Some help versions
   advertise bracket parameters for context, effort and Fast. In builds that
@@ -364,12 +351,6 @@ to discover active global and project settings, including supported
   standard. Bare parameterized IDs can reuse saved per-model choices or server
   defaults, including Fast. Headless model selection can also update CLI configuration.
   If the Fast variant is unavailable, explicitly select standard.
-- **Native Fast dispatch**: frontmatter documents `<model-id>[fast=false]` and
-  `<model-id>[]` for standard. `<model-id>[fast=true]` follows SDK parameters
-  but remains untested in a subagent file; a parent can name a model at launch.
-  Do not use `inherit` or the undocumented `model: fast` form. Set each role's
-  variant explicitly and inspect its task card because a saved/default or
-  parent-selected Fast variant can differ from the intended setting.
 - **Output and verification**: text is final text; JSON `.result` holds the
   answer but no model field. Stream JSON adds the init display name and terminal
   `result`. Reject nonzero exit or a stream lacking that terminal event. Runs
@@ -432,12 +413,6 @@ a new account or build.
   an unverified `-ultrafast` UID, is unconfirmed. If no Fast counterpart exists,
   use standard. Treat rejection or fallback from the requested Fast UID as
   failure to carry that assignment, rather than assuming its tier.
-- **Native Fast dispatch**: custom-subagent `model` uses the same UID as
-  `--model`; a skill's model overrides the profile. Give each role a custom
-  definition naming its exact variant. `subagent_general` inherits the parent
-  model and does not independently establish the role's speed. Fast UIDs in
-  custom frontmatter are untested; inspect run evidence to confirm the role ran
-  its intended variant.
 - **Output and verification**: print mode outputs the response, with no JSON
   response mode. `--export <path>` writes ATIF conversation data after each
   turn; whether it establishes served-model identity remains unconfirmed.

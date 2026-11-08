@@ -9,6 +9,12 @@ port**, the **API base + mock fixtures and routing**, the **capture matrix
 is the font-abort route in `installMocks`: delete it when the font host is
 reachable.
 
+- [Why it is shaped this way](#why-it-is-shaped-this-way)
+- [Run](#run)
+- [Skeleton — `/tmp/uxsweep/capture.mjs`](#skeleton--tmpuxsweepcapturemjs)
+- [Deep / nested / guarded routes](#deep--nested--guarded-routes)
+- [One-shot root-cause probe (step 6)](#one-shot-root-cause-probe-step-6)
+
 ## Why it is shaped this way
 
 - It intercepts every API call and fulfills JSON in-browser — the real

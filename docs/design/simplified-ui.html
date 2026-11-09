@@ -28,6 +28,26 @@
   --scrim: oklch(0.20 0.01 250 / 0.32);
   --e1: 0 1px 2px oklch(0.2 0.01 250 / 0.06), 0 8px 24px oklch(0.2 0.01 250 / 0.08);
   --e2: 0 16px 48px oklch(0.2 0.01 250 / 0.18);
+  /* Main-screen atmosphere and composer. Copied from the product theme. */
+  --accent-warm: oklch(0.58 0.19 18);
+  --welcome-ambient: radial-gradient(60% 50% at 50% 33%, oklch(0.60 0.21 254 / 0.15), transparent 72%);
+  --hero-gradient:
+    linear-gradient(to bottom, oklch(0.60 0.21 254 / 0.07), transparent 40%),
+    radial-gradient(130% 75% at 50% 116%, color-mix(in oklch, var(--accent-warm), transparent 88%), transparent 64%);
+  --glass-blur: 20px;
+  --glass-blur-capsule: 18px;
+  --glass-saturate: 1.7;
+  --glass-brightness: 1.03;
+  --glass-regular-bg: rgba(255, 255, 255, 0.72);
+  --glass-strong-bg: rgba(255, 255, 255, 0.90);
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -1px 0 rgba(255, 255, 255, 0.12);
+  --glass-border: rgba(255, 255, 255, 0.18);
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  --glass-shadow-ambient: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --glass-shadow-key: 0 12px 32px rgba(0, 0, 0, 0.10);
+  --focus-glow-edge: 0 0 0 1.5px oklch(0.59 0.20 247 / 0.8);
+  --hero-glow-edge: 0 0 0 1px oklch(0.60 0.21 254 / 0.26);
+  --hero-glow-halo: 0 0 36px 6px oklch(0.60 0.21 254 / 0.16), 0 12px 40px 2px color-mix(in oklch, var(--accent-warm), transparent 86%);
   --r-sm: 8px;
   --r-lg: 16px;
   --r-full: 9999px;
@@ -67,6 +87,25 @@
   --scrim: oklch(0 0 0 / 0.56);
   --e1: 0 1px 2px oklch(0 0 0 / 0.45), 0 8px 24px oklch(0 0 0 / 0.6);
   --e2: 0 16px 48px oklch(0 0 0 / 0.6);
+  --accent-warm: oklch(0.64 0.22 18);
+  --welcome-ambient: radial-gradient(60% 50% at 50% 33%, oklch(0.74 0.20 254 / 0.22), transparent 74%);
+  --hero-gradient:
+    linear-gradient(to bottom, oklch(0.74 0.20 254 / 0.12), transparent 42%),
+    radial-gradient(130% 80% at 50% 118%, color-mix(in oklch, var(--accent-warm), transparent 76%), transparent 66%);
+  --glass-blur: 20px;
+  --glass-blur-capsule: 18px;
+  --glass-saturate: 1.6;
+  --glass-brightness: 1.06;
+  --glass-regular-bg: rgba(20, 22, 30, 0.66);
+  --glass-strong-bg: rgba(20, 22, 30, 0.86);
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 0.10), inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  --glass-shadow-ambient: 0 1px 2px rgba(0, 0, 0, 0.20);
+  --glass-shadow-key: 0 18px 40px rgba(0, 0, 0, 0.38);
+  --focus-glow-edge: 0 0 0 1.5px oklch(0.72 0.18 247 / 0.85);
+  --hero-glow-edge: 0 0 0 1px oklch(0.74 0.20 254 / 0.34);
+  --hero-glow-halo: 0 0 44px 8px oklch(0.74 0.20 254 / 0.22), 0 14px 48px 2px color-mix(in oklch, var(--accent-warm), transparent 80%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -87,6 +126,25 @@
     --scrim: oklch(0 0 0 / 0.56);
     --e1: 0 1px 2px oklch(0 0 0 / 0.45), 0 8px 24px oklch(0 0 0 / 0.6);
     --e2: 0 16px 48px oklch(0 0 0 / 0.6);
+    --accent-warm: oklch(0.64 0.22 18);
+    --welcome-ambient: radial-gradient(60% 50% at 50% 33%, oklch(0.74 0.20 254 / 0.22), transparent 74%);
+    --hero-gradient:
+      linear-gradient(to bottom, oklch(0.74 0.20 254 / 0.12), transparent 42%),
+      radial-gradient(130% 80% at 50% 118%, color-mix(in oklch, var(--accent-warm), transparent 76%), transparent 66%);
+    --glass-blur: 20px;
+    --glass-blur-capsule: 18px;
+    --glass-saturate: 1.6;
+    --glass-brightness: 1.06;
+    --glass-regular-bg: rgba(20, 22, 30, 0.66);
+    --glass-strong-bg: rgba(20, 22, 30, 0.86);
+    --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 0.10), inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    --glass-shadow-ambient: 0 1px 2px rgba(0, 0, 0, 0.20);
+    --glass-shadow-key: 0 18px 40px rgba(0, 0, 0, 0.38);
+    --focus-glow-edge: 0 0 0 1.5px oklch(0.72 0.18 247 / 0.85);
+    --hero-glow-edge: 0 0 0 1px oklch(0.74 0.20 254 / 0.34);
+    --hero-glow-halo: 0 0 44px 8px oklch(0.74 0.20 254 / 0.22), 0 14px 48px 2px color-mix(in oklch, var(--accent-warm), transparent 80%);
   }
 }
 
@@ -213,6 +271,10 @@ img, svg { display: block; }
   flex-direction: column;
   background: var(--canvas);
 }
+.main.welcome {
+  background: var(--welcome-ambient), var(--hero-gradient), var(--canvas);
+}
+.main.welcome .header { background: transparent; }
 .header {
   height: var(--header);
   flex: none;
@@ -334,14 +396,42 @@ img, svg { display: block; }
   flex: none;
 }
 .composer {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  box-shadow: var(--e1);
+  position: relative;
+  background: var(--glass-regular-bg);
+  border: 0;
+  border-radius: 24px;
   padding: 12px 12px 8px;
-  transition: border-color var(--fast) var(--ease);
+  -webkit-backdrop-filter: blur(var(--glass-blur-capsule)) saturate(var(--glass-saturate)) contrast(1.05) brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur-capsule)) saturate(var(--glass-saturate)) contrast(1.05) brightness(var(--glass-brightness));
+  box-shadow:
+    var(--glass-rim),
+    inset 0 0 0 1px var(--glass-border),
+    var(--glass-shadow-ambient),
+    var(--glass-shadow-key);
+  transition: box-shadow var(--slow) var(--ease);
 }
-.composer:focus-within { border-color: var(--accent); }
+.main.welcome .composer {
+  background: var(--glass-strong-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(1.05) brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(1.05) brightness(var(--glass-brightness));
+}
+.main.welcome .composer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: var(--hero-glow-edge), var(--hero-glow-halo);
+  transition: opacity 700ms var(--ease);
+}
+.composer:focus-within {
+  box-shadow:
+    var(--focus-glow-edge),
+    var(--glass-highlight),
+    var(--glass-shadow-ambient),
+    var(--glass-shadow-key);
+}
+.main.welcome .composer:focus-within::before { opacity: 0; }
 .composer-input {
   display: block;
   width: 100%;

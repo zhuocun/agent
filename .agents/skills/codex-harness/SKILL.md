@@ -20,9 +20,11 @@ Use one durable ledger that links asks, actual project lifecycle, branches or wo
 
 ## 2. Reconstruct the current task
 
-At turn start, read the ledger and current user instructions before acting on queued completions. A stop or scope change can invalidate a recorded next action. Reconcile only owned jobs and agents using delivered messages, current tool results, and per-attempt exit records. Use the host's supported agent listing when ownership reconciliation requires it. Process queued completions under **4. Wait, validate, and continue** before choosing or launching new work.
+At turn start, read the ledger and current user instructions before acting on queued completions. A stop or scope change can invalidate a recorded next action. Apply [task-ledger.md — Handle messages and races](references/task-ledger.md#handle-messages-and-races) to new user steering.
 
-After compaction, rebuild scope and ownership before launching work. Confirm the reconstruction against relevant files and project status, including the branch or worktree when applicable. Apply [task-ledger.md — Handle messages and races](references/task-ledger.md#handle-messages-and-races) to new user steering.
+After compaction, reload this skill and any reference whose applicable instructions are missing from context. Rebuild scope and ownership. Confirm the reconstruction against relevant files and project status, including the branch or worktree when applicable, before launching work, accepting results, retrying jobs, or changing task resources.
+
+Reconcile only owned jobs and agents using delivered messages, current tool results, and per-attempt exit records. Use the host's supported agent listing when ownership reconciliation requires it. Process queued completions under **4. Wait, validate, and continue** before choosing or launching new work.
 
 ## 3. Choose an execution vehicle
 
@@ -64,7 +66,7 @@ Read [platform-tools.md](references/platform-tools.md) for host distinctions and
 
 - [ ] Each owned ask and attempt satisfies **1. Record ownership** and has the fields required by **Location and registration**, with unavailable fields marked explicitly.
 - [ ] At turn start, the ledger and current user instructions were read before acting on queued completions, only owned jobs and agents were reconciled from messages, tool results, and per-attempt exit records, the supported agent listing was used when ownership reconciliation required it, and queued completions were processed under **4. Wait, validate, and continue** before choosing or launching new work.
-- [ ] After compaction, scope and ownership were rebuilt before launching work and confirmed against relevant files and project status, including the branch or worktree when applicable.
+- [ ] After compaction, this skill and any reference whose applicable instructions were missing from context were reloaded, and scope and ownership were rebuilt and confirmed against relevant files and project status, including the branch or worktree when applicable, before launching work, accepting results, retrying jobs, or changing task resources.
 - [ ] New user steering was handled according to **Handle messages and races**.
 - [ ] Execution vehicle selection satisfies **3. Choose an execution vehicle**, with settings and briefs checked against **Model and vehicle** and **Brief and dispatch** where applicable.
 - [ ] Waiting, completed results, and continuation satisfy **4. Wait, validate, and continue**, with CLI evidence and stops or retries checked against **Validate completion** and **Suspected hangs and retry limits** where applicable.

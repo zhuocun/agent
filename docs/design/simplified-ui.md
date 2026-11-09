@@ -212,12 +212,11 @@ Every view keeps to at most 6 type styles, 2 shadows (`e1`, `e2`), 3 radii and 4
 
 - **KEEP:**
   - the user bubble (`subtle`); "Thought for 1s ⌄" in Caption; the answer in Body;
-  - the attribution line in Meta, always visible: "Fake · Fast" (served model · tier). It appends "· your key" for BYOK, and "· Answered without live sources" when search was requested but no sources resolved;
+  - the model name in Meta, always visible, under the answer: "Fake". Nothing else is added to that line;
   - Copy and More on every assistant message. More holds Regenerate, Helpful, Not helpful, Read aloud ▸ (Play/Stop, Slower, Faster, Voice), Continue, Branch in new chat, View spend, Regenerate with ▸ (tiers, then providers);
   - Jump to latest, only when scrolled away.
-- **Action placement:** one footer row under each answer. The attribution text, or the substitution line that replaces it, sits on the left; Copy and More follow it 8px to its right on the same row. On desktop, Copy and More are hidden at rest on every message, including the latest. They appear on hover or `:focus-within` of the message, per `03-anti-patterns.md` §F ("One disclosure rule for both desktop and touch"). On phone they are always visible at 44px, and they drop to their own row only if the text wraps.
-- **MERGE:** the separate "Fast" label goes into the substitution line.
-- **REWORD:** the substitution callout becomes one text-only line in `notice-text` (no fill, no icon) that replaces the attribution line: "Requested Auto · Served Fake (Fast) · Auto chose a cheaper model". Reason copy comes from the PRD 07 §5 summaries. The "· your key" and "· Answered without live sources" suffixes still append to it.
+- **Action placement:** one footer row under each answer. The model name sits on the left; Copy and More follow it 8px to its right on the same row. On desktop, Copy and More are hidden at rest on every message, including the latest. They appear on hover or `:focus-within` of the message, per `03-anti-patterns.md` §F ("One disclosure rule for both desktop and touch"). On phone they are always visible at 44px, and they drop to their own row only if the text wraps.
+- **CUT:** the requested-model, served-model, and reason line. The model name is the whole footer. The separate "Fast" tier label goes with it.
 - **CUT:** the callout's info icon and box; the user message's "Branch in new chat" (the assistant's More already has it); the follow-up chips (typing does the same).
 - **Layout:** one 720px column, 32px between turns. User-message Edit and Copy appear on hover or focus on desktop and on long-press on phone. The message list is a region labeled "Messages".
 
@@ -235,7 +234,7 @@ On phone: a 56px header with the wordmark at the left and the action at the righ
 | View | Job | Elements after the change | Measured | Icons |
 |---|---|---|---|---|
 | status | Is the platform healthy? | Title "All systems operational"; Meta "Requests are completing normally."; Meta "Last 15 minutes: 0 requests, 0 errors."; Caption "Updated Nov 3, 2026, 4:53 PM · Platform-wide, not your account."; quiet "Back to chat" at the header right. CUT the card, check icon and 3-column stat grid. Degraded colors only the title: `notice-text`, or `danger` for an outage | 3 → 1 | 2 → 0 |
-| shared | Read someone's chat | Title = chat name; Caption "Shared chat · read-only"; messages as in thread, with reasoning disclosure, attribution line and substitution line (now naming the requested model, which "Downgraded by router…" omits); primary "Start your own chat" at the header right. No cost, tokens or message actions | 4 → 2 | 3 → 1 |
+| shared | Read someone's chat | Title = chat name; Caption "Shared chat · read-only"; messages as in thread, with the reasoning disclosure and the model name under the answer; primary "Start your own chat" at the header right. No cost, tokens or message actions | 4 → 2 | 3 → 1 |
 | share-unavailable | Explain a dead link | Centered Title "This shared chat is no longer available"; Meta "The link may have been revoked or never existed. Ask the person who shared it for a new link."; primary "Start your own chat". CUT the icon and the duplicate header button | 4 → 1 | 2 → 0 |
 | not-found | Recover from a bad URL | Title "Page not found"; Meta "This page doesn't exist or has moved."; primary "Back to chat". CUT the "404" eyebrow; the centered wordmark moves to the header | 2 → 1 | 0 → 0 |
 
@@ -412,8 +411,8 @@ Controls: 792 → **478** (−40%; ceiling 530). Icons: 774 → **207** (−73%)
 | Guardrail (source) | Today | After the change |
 |---|---|---|
 | AI-interaction disclosure (EU AI Act Art. 50(1); noted in PRD 07 §6.4) | welcome `p role=note` "You're chatting with an AI assistant…" | Same node and copy, directly under the greeting, desktop and phone |
-| Served model and tier on every assistant message, without hover (§6.1, AC 1) | "Fast" label; the model appears only inside the callout | Attribution line "Fake · Fast", always visible, Meta at 6.3:1; also on shared. Only Copy and More hide at rest, never the attribution |
-| Substitution callout names requested, served and reason (§5, §6.1) | "Rerouted from Auto → Fake · Downgraded by router…"; shared omits the requested model | "Requested Auto · Served Fake (Fast) · Auto chose a cheaper model", text-only `notice-text`, never `danger`, announced by the status region; same on shared |
+| Served model on every assistant message, without hover (§6.1) | "Fast" label; the model appears only inside the callout | Model name "Fake", always visible under the answer, Meta; also on shared. Only Copy and More hide at rest, never the name |
+| Requested model, served model, and reason on the message (§5, §6.1) | "Rerouted from Auto → Fake · Downgraded by router…" | Not shown. The model name is the footer |
 | View spend on every finished message (AC 9) | Message More menu | Unchanged: More › View spend opens Usage & spend; More is reachable by hover, focus or touch. No inline cost in the thread |
 | Usage remaining legible; guest cap and sign-up path (§6.3) | Settings only; the sidebar says "Free" | "1,000 guest credits left this month" on the account row at rest (phone: one step away in the drawer); near-limit `notice-bg` line above the composer with "Create account" for guests and "Upgrade" for signed-in Free; meter in Settings › Account; BYOK shows "Billed to your key" |
 | Estimates labeled (§6.1, §7.2) | Spend panel | "est." beside any non-exact figure in Usage & spend and in model prices |

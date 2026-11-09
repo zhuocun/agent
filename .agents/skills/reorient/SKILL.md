@@ -1,7 +1,7 @@
 ---
 name: reorient
 description: >-
-  Reconstruct and verify your working context after a context compaction, then resume an in-progress task safely. Use when a long conversation was summarized and detail was lost; when you are unsure what is finished versus still pending; or when the user says "catch up", "where were we", "recap", "rebuild context", "restore context", "re-orient", or "continue where we left off" about the work in progress in this conversation. The summary is a lossy pointer — confirm what is done against ground truth (git, PRs, CI, the actual files) before acting, never from the summary alone. Do not use for a request to summarize a document, meeting, or topic, for a brand-new task with no prior work, a trivial single-step request, when you already hold full context, or for reporting to a reader outside this conversation.
+  Reconstruct and verify your working context after a context compaction, then resume an in-progress task safely. Use when a long conversation was summarized and detail was lost; when you are unsure what is finished versus still pending; or when the user says "catch up", "where were we", "recap", "rebuild context", "restore context", "re-orient", or "continue where we left off" about the work in progress in this conversation. Do not use for a request to summarize a document, meeting, or topic, for a brand-new task with no prior work, a trivial single-step request, when you already hold full context, or for reporting to a reader outside this conversation.
 ---
 
 # Reorient
@@ -63,8 +63,8 @@ End by resuming the top to-do without waiting for confirmation when the user sig
 ## Self-check
 
 - [ ] The task goal is stated in one sentence, reconciled with the user's latest instruction.
-- [ ] Every claimed-done item was checked against ground truth where its output lives (git status/log/diff, open + merged PRs, CI, the actual files, the deployed or remote state) and bucketed: merged/landed · pushed-unmerged · committed-locally · in-progress · not-started · unverified; nothing unverified was redone without confirming it is missing, and nothing was pushed to a merged branch.
-- [ ] The to-do list is goal-minus-verified-done, cross-checked against trackers / PR checklists / failing tests / `TODO`s / the user's last ask, and ordered by dependency, or in the order the user set.
+- [ ] Every claimed-done item was checked against ground truth where its output lives, and every item was classified into exactly one Pass 2 bucket: merged/landed · pushed-unmerged · committed-locally · in-progress (dirty/partial) · not-started · unverified, with all of Pass 2's destination, status-evidence, unverified/no-redo, and merged-branch conditions satisfied.
+- [ ] The to-do list is goal-minus-verified-done, with unverified items entered as checks rather than work to redo, cross-checked against Pass 3's records of remaining work, and ordered according to Pass 3's complete ordering rule.
 - [ ] For the next to-dos I have the files, conventions, contracts, and prior-decision *why*, or I went and read them; nothing left to guess.
 - [ ] No irreversible action (commit/push/merge/deploy/delete) was taken before the rebuild completed.
-- [ ] The recap returns 1–3 with verifiable anchors on the "finished" items; #4 stayed internal; no decision was invented.
+- [ ] The recap returns 1–3 with verifiable anchors on the "finished" items; #4 stayed internal; no decision, rationale, or completed step was invented; any such matter absent from the record is reported as "unknown", as required by **Inventing the record**.

@@ -45,7 +45,7 @@ An idle agent wakes only on a user message or on an event Cursor delivers as a n
 
 - Do independent ledger work first. When none remains, block with `AwaitShell`: on the waiter when one detached run is going; on an any-end waiter when two or more are going; or on a job by id when only background shell jobs are running. An **any-end waiter** is one background shell job that exits as soon as any watched end marker appears. Collect other background shell jobs and Task subagent results at the next inventory.
 - Where a timer tool exists, keep a **safety timer** subscribed: a timer subscription whose prompt says "run the inventory from the ledger", one-shot at a known end time or recurring when the end is uncertain. Its prompts can arrive late and batched, so treat each batch as one inventory request.
-- After an interruption, handle the message and run the inventory. Then start a fresh waiter over the remaining runs and block again in the same turn, unless the user asked you to stop working, or a safety timer covers the remaining runs and they will take much longer than its interval; in those cases end the turn and leave the runs going.
+- After an interruption, handle the message and run the inventory. If the user asked you to stop working, end the turn without another blocking wait and leave the runs going. Otherwise start a fresh waiter over the remaining runs and block again in the same turn, unless a safety timer covers the remaining runs and they will take much longer than its interval; in that case, end the turn and leave the runs going.
 
 Scripts and settings: [tmux run plus waiter](references/background-work.md#tmux-run-plus-waiter-verified-2026-10-12), [any-end waiter](references/background-work.md#any-end-waiter), [safety timers](references/background-work.md#safety-timers); evidence and the Cloud Agent queue check: [wait routine](references/background-work.md#wait-routine).
 
@@ -83,7 +83,7 @@ When you confirm a reusable Cursor Harness fact or fix:
 - [ ] Every ask that leaves work owed, and every subagent, job, run, and timer I own, got a ledger entry before I started or launched it, and every running entry names its completion signal and next action.
 - [ ] I ran the turn-start inventory before handling the new message.
 - [ ] Every detached run has an end marker and a waiter.
-- [ ] While runs were going, a safety timer was subscribed wherever a timer tool existed, and after each interruption I started a fresh waiter over the remaining runs and blocked again, or ended the turn because the user asked me to stop working or a safety timer covered the remaining runs and they would take much longer than its interval.
+- [ ] While runs were going, a safety timer was subscribed wherever a timer tool existed. After each interruption, if the user had asked me to stop working, I ended the turn without another blocking wait and left the runs going; otherwise I started a fresh waiter over the remaining runs and blocked again, or ended the turn and left the runs going because a safety timer covered the remaining runs and they would take much longer than its interval.
 - [ ] Nothing was marked done without evidence; new tasks and acceptances quote the user's exact words.
 - [ ] My final message groups open entries as running, waiting on you, and queued, and for running work says where to look and what happens on completion.
 - [ ] New reusable facts went to the right reference with a status label.

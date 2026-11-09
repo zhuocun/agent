@@ -101,7 +101,7 @@ A view uses at most four text colors: `text`, `text-muted`, and two of `accent`,
 | Buttons | 36px tall desktop, 44px phone. Variants: primary (`accent` fill), secondary (`subtle` fill), danger (`danger` fill, the same on every viewport and every dialog), quiet (no fill, `subtle` on hover). |
 | Icon buttons | 32px desktop, 44px phone; icons 16px / 20px at 1.5 stroke |
 
-**Dialogs, menus, and the sidebar stay flat.** The welcome column and the composer keep the product's main-screen theme and are not restyled: the welcome background is `--welcome-ambient` over `--hero-gradient`, and the composer stays glass. On welcome the card uses the stronger fill and the resting hero glow. On the thread the composer keeps the lighter glass, and the column stays flat.
+**Dialogs, menus, and the sidebar stay flat.** The welcome column, the thread column, and the composer keep the product's main-screen theme and are not restyled. Both columns use `--welcome-ambient` over `--hero-gradient`. The composer on both is the stronger glass, with the resting hero glow.
 
 - The header has no surface; its buttons sit on the canvas over a 16px canvas-colored fade.
 - The composer is `surface` with a `line` hairline and `e1`.

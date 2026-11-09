@@ -12,7 +12,7 @@ description: >-
 
 # Frontend Code Review
 
-Find user-visible frontend defects with few false alarms. Report only proven reachable violations after searching for defenses.
+Find user-visible frontend defects and concrete maintainability violations with few false alarms. Report only findings confirmed under Step 3: Verify before reporting.
 
 Priority: **runtime safety, security and data integrity → failure handling → state and effect correctness → type honesty → maintainability and layering → style**. Follow explicit user and project requirements first.
 
@@ -34,7 +34,7 @@ Priority: **runtime safety, security and data integrity → failure handling →
    - Each effect: dependencies, captured values, resources, and cleanup.
    - Each async action: initiator, pending state, success, failure, cancellation, and completion writes.
    - Each rendered untrusted string: source, transformations, and final text, HTML, URL, or attribute context.
-4. Connect the entries across files. Trace response → adapter → hook/cache → component → user action → write. Include covering tests. Map each in-scope story to its code path and covering test.
+4. Connect the entries across files. Trace response → adapter → hook/cache → component → user action → write. Include available covering tests for every reviewed flow. Map each in-scope given story to available code paths and effective covering tests; record unavailable code and missing or ineffective coverage as gaps. Mark excluded stories outside scope without expanding the review boundary. Use Step 4: Rate and report for every given story's status.
 
 ## Step 2: Hunt each entry
 
@@ -124,14 +124,18 @@ Usually correct: small colocated components; intentional composition or prop pas
 
 ## Step 3: Verify before reporting
 
-For each candidate, try to disprove it:
+For each candidate, try to disprove it under the applicable proof route:
 
-1. Locate the contract: PR description, given stories and acceptance criteria, and product rules; types, schemas, and API docs; callers, tests, and established behavior; project standards. Distinguish compile-time promises from runtime enforcement. A story silent on the case confirms nothing; the absence of a story is never itself a defect.
-2. Check baseline UI obligations too. Supported inputs must not crash. Untrusted content must not execute. Edits must not silently move to another record or disappear during the promised flow. Failed work must not appear successful. Displayed results must match their stated identity and freshness.
-3. Trace the exact trigger's branch conditions and intermediate values across files; confirm branch reachability and rule violation. Exclude boundary-rejected data. Static trace and arithmetic can suffice; use permitted isolated probes only for decisive uncertainty.
-4. Search callers, schemas, adapters, shared hooks, framework behavior, and cache configuration for defenses. Trace each against this trigger; drop blocked candidates.
-5. Name the user-visible consequence and narrowest fix. Keep valid guards and recovery behavior.
-6. Classify: **Confirmed** requires the reachable trigger, violated contract, and evidence. **Uncertain** means a decisive fact or contract is silent or ambiguous; state the exact question and decision owner. **Suggestion** means an optional improvement without a demonstrated violation. Keep the three separate. Drop disproved candidates.
+1. Locate the contract for a behavior candidate or the structural basis under section 2.9. Consult the PR description, given stories and acceptance criteria, product rules, types, schemas, API docs, callers, tests, established behavior, and project standards. Distinguish compile-time promises from runtime enforcement. A story silent on the case confirms nothing; the absence of a story is never itself a defect.
+2. For behavior candidates, check baseline UI obligations too. Supported inputs must not crash. Untrusted content must not execute. Edits must not silently move to another record or disappear during the promised flow. Failed work must not appear successful. Displayed results must match their stated identity and freshness.
+3. Establish the applicable proof:
+   - **Behavior:** Trace the exact trigger's branch conditions and intermediate values across files; confirm branch reachability and rule violation. Exclude boundary-rejected data.
+   - **Structure:** Trace actual code locations and relationships that prove a violated applicable documented or existing convention or a concrete maintenance consequence under section 2.9.
+
+   Static trace and arithmetic can suffice; use permitted isolated probes only for decisive uncertainty.
+4. Search callers, schemas, adapters, shared hooks, framework behavior, cache configuration, and applicable conventions and exceptions for defenses. Trace each against the exact behavior trigger or claimed structural violation or maintenance consequence; drop blocked candidates.
+5. Name the user-visible consequence for a behavior candidate or the proven convention violation or concrete maintenance consequence for a structural candidate. Choose the narrowest fix. Keep valid guards and recovery behavior.
+6. Classify: **Confirmed** requires evidence satisfying the applicable proof route in Step 3 items 1–5. **Uncertain** means a decisive fact or contract is silent or ambiguous; state the exact question and decision owner. **Suggestion** means an optional improvement without a demonstrated violation. Keep the three separate. Drop disproved candidates.
 
 ## Step 4: Rate and report
 
@@ -149,10 +153,10 @@ Use this compact form. Omit empty sections. Order findings by severity. Combine 
 Scope: <revision/diff and flows reviewed; later round: base revision, fixes verified>
 Findings: <count, or no confirmed defects in reviewed scope>
 F1 [severity] <title> — <file:line; related locations>
-  Trigger: <action/value/timing and cross-file path>
-  Contract: <required behavior and source>
-  Consequence: <what the user sees or loses>
-  Evidence: <decisive code facts; reproduction/test result if run>
+  Trigger: <behavior: action/value/timing and cross-file path; structure: actual code locations and relationships>
+  Contract: <behavior: required behavior and source; structure: section 2.9 basis and its source>
+  Consequence: <behavior: what the user sees or loses; structure: proven convention violation or concrete maintenance consequence>
+  Evidence: <decisive code facts and searched defenses; reproduction/test result if run>
   Fix: <narrowest repair; exact replacement when useful>
   Verify: <regression assertion that fails before and passes after>
 Uncertain: <question; missing fact/source; owner>
@@ -168,8 +172,9 @@ Propose the verification; do not implement it during review without permission. 
 
 ## Self-check
 
-- [ ] Every changed flow has an inventory. Read unchanged callers, types, shared hooks, and consumers needed for its contract. Each given story has a path, test, and status, or Stories says none given.
-- [ ] Trace each applicable hunt section across files, including stale completions and failure paths. List skipped or unavailable coverage.
-- [ ] Each finding has a reachable trigger, contract, location, consequence, evidence, searched defense, and narrow fix.
-- [ ] Reject usually-correct look-alikes. Separate uncertain cases, test gaps, structural concerns, and optional suggestions from confirmed behavior defects.
-- [ ] Scale severity and report length to proven impact. One finding per cause, with every instance; pre-existing defects on their own line; fixed earlier findings not repeated; a later round reviews newer changes and earlier fixes. Record checks honestly. Keep review separate from remediation and preserve unrelated work.
+- [ ] **Priority:** The stated order and explicit user/project requirements were followed.
+- [ ] **Review rules:** All rules hold under their stated conditions and exceptions.
+- [ ] **Step 1: Map the change:** Its requirements, framework, inventory, dependency, cross-file trace and scope obligations are complete under their stated conditions. Story mappings and coverage gaps follow item 4's availability and exclusion conditions.
+- [ ] **Step 2: Hunt each entry:** Every applicable hunt section was traced across files, including stale completions and failure paths, with skipped or unavailable coverage listed and Usually correct look-alikes rejected.
+- [ ] **Step 3: Verify before reporting:** Each finding satisfies its applicable proof and classification rules, with uncertain cases, test gaps, structural findings and optional suggestions separate from confirmed behavior defects.
+- [ ] **Step 4: Rate and report:** The report meets its severity, form, finding-field, story-status, attribution, ID, later-round, proposed-verification and claim-limit rules under their stated conditions and exceptions.

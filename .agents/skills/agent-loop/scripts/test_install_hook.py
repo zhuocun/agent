@@ -426,7 +426,8 @@ class CommandTest(Base):
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               universal_newlines=True, env=self.env(), cwd=self.workspace,
                               timeout=20)
-        self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, "{}\n", ""))
+        neutral = '{"decision": "stop"}\n' if host == "antigravity" else "{}\n"
+        self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, neutral, ""))
 
     def test_command_is_absolute_and_runs(self):
         for host, scope in CASES:

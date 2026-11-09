@@ -9,8 +9,9 @@ python3 <absolute path of the loop_hook.py beside this file> --host HOST.
 Install replaces this hook's existing entries in place and keeps every other
 key and entry; uninstall removes only this hook's entries and the containers
 that removal leaves empty, and deletes a file that removal leaves an empty
-object. A file that is not a JSON object is refused and left untouched. Exit
-codes: 0 success, 1 refused file, 2 usage. Python 3.8 or later, standard
+object. A file that is not a JSON object is refused and left untouched.
+Exit codes: 0 success, 1 refused configuration or filesystem-operation failure,
+2 usage, invalid workspace or --host claude. Python 3.8 or later, standard
 library only.
 """
 import argparse
@@ -276,7 +277,11 @@ def run(options):
                          "frontmatter; there is nothing to install.\n")
         return 2
     if options.workspace is not None and not os.path.isdir(options.workspace):
-        sys.stderr.write("--workspace %s is not a directory.\n" % options.workspace)
+        sys.stderr.write(
+            "--workspace %s is not a directory. Expected an existing workspace "
+            "directory; correct --workspace and retry with --dry-run.\n"
+            % options.workspace
+        )
         return 2
     path = target_path(options.host, options.scope, options.workspace)
     try:
@@ -286,7 +291,12 @@ def run(options):
         found = edit(data, options.host, options.scope, entry)
         content = render(data)
     except Refused as error:
-        sys.stderr.write("Refused: %s; the file was left untouched.\n" % error)
+        sys.stderr.write(
+            "Refused: %s; the file was left untouched. Expected readable plain "
+            "JSON with the host's supported object and list containers. Check "
+            "the selected path and permissions; back up and repair malformed "
+            "configuration, then retry with --dry-run.\n" % error
+        )
         return 1
     delete = options.uninstall and found and not data
     if options.dry_run:
@@ -311,7 +321,16 @@ def run(options):
 
 
 def main():
-    return run(parse_args(sys.argv[1:]))
+    try:
+        return run(parse_args(sys.argv[1:]))
+    except OSError as error:
+        sys.stderr.write(
+            "Hook configuration operation failed: %s. Expected a readable "
+            "configuration and writable target directory. Inspect the target "
+            "before retrying; check scope, path and permissions, then use "
+            "--dry-run before installing or uninstalling.\n" % error
+        )
+        return 1
 
 
 if __name__ == "__main__":

@@ -9,8 +9,10 @@ always exits 0. It asks the host to continue only when the event comes from
 the main session that owns the state file, the loop has no stop reason, an
 item is actionable (or a waiting item has no waiter running), and the budget
 and progress guards pass. With --host devin, a SessionStart event tells the
-session its ID instead. Any error or unexpected input prints {} so the turn
-may end. Python 3.8 or later, standard library only.
+session its ID instead. After successful argument parsing, Antigravity
+no-continuation output is {"decision": "stop"}; other hosts use {}.
+Argument-parse failures before host resolution use {}. Python 3.8 or later,
+standard library only.
 """
 import hashlib
 import json
@@ -159,7 +161,7 @@ def find_state(roots):
 
 
 def parse_state(text):
-    """Step 3: return (header, items, log line count); raise on any format violation."""
+    """Return parsed headers, matched queue items and the count of log entries."""
     header, items, log_lines, section, has_queue = {}, [], 0, None, False
     for raw in text.splitlines():
         line = raw.strip()
@@ -289,11 +291,9 @@ def decide(event, state_arg, host="claude"):
     if end["failed"] or header.get("stop", ""):
         return clear_pending(sidecar_path, session) if tracks_pending else None
 
-    open_ids = {item["id"] for item in items}
     actionable = [
         item for item in items
-        if item["status"] == "doing"
-        or (item["status"] == "ready" and (item["after"] is None or item["after"] not in open_ids))
+        if item["status"] in ("doing", "ready") and item["after"] is None
     ]
     waiting = sum(1 for item in items if item["status"] == "waiting")
     user = sum(1 for item in items if item["status"] == "user")
@@ -335,10 +335,14 @@ def decide(event, state_arg, host="claude"):
     if no_waiter:
         message = (
             "%s Loop idle in %s (turn %d/%d): %d waiting item(s) but no background "
-            "task is running. For each waiting item that needs an external event, "
-            "run its check; if the event has not happened, start its waiter as a "
-            "background command. If an item waits for nothing external, change its "
-            "status. Then end your turn." % (TAG, path, turn, budget, waiting)
+            "task is running. Re-read the state and run each waiting item's check. "
+            "If its event has not happened, follow pass 5's Waiter rule for this "
+            "host and mode: complete required blocking collection, use a supported "
+            "wake route within its lifetime, or record collection for the next "
+            "user message or explicit resume. Reconcile an item that needs no "
+            "external event. Complete required coverage before ending your turn. "
+            "Do not start an unsupported waiter or scheduled queue execution."
+            % (TAG, path, turn, budget, waiting)
         )
     else:
         message = (
@@ -346,15 +350,15 @@ def decide(event, state_arg, host="claude"):
             "the user. Run the next iteration: re-read the file, reconcile it with "
             "evidence, take the next actionable item (now %s), handle its gate "
             "first if it needs one, act, verify against its done criterion, update "
-            "the file, then continue, fix or stop. Begin your final message with "
-            "the loop status line."
+            "the file, then continue, fix or stop. Include the loop facts in your "
+            "final message under pass 7's applicable form rule."
             % (TAG, path, turn, budget, len(actionable), waiting, user, pick["id"])
         )
     if side["strikes"] == 1:
         message += (
-            " The queue did not change during the last automatic turn: record "
-            "progress or the blocker; another unchanged turn ends automatic "
-            "continuation."
+            " The hook's no-progress key did not change during the last automatic "
+            "turn. Record evidenced progress or the blocker; another turn with "
+            "the same key ends automatic continuation."
         )
     if turn == budget:
         message += (
@@ -394,6 +398,7 @@ def respond(event, host, state_arg):
 
 def main():
     output = {}
+    host = "claude"
     try:
         host, state_arg = parse_args(sys.argv[1:])
         event = json.loads(sys.stdin.read() or "null")
@@ -401,6 +406,8 @@ def main():
             output = respond(event, host, state_arg)
     except Exception:
         output = {}
+    if host == "antigravity" and not output:
+        output = {"decision": "stop"}
     try:
         sys.stdout.write(json.dumps(output) + "\n")
         sys.stdout.flush()

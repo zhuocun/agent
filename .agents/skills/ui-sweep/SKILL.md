@@ -5,11 +5,36 @@ description: Review (and, when asked, fix) UI/UX regressions in a web app via he
 
 # UI Sweep
 
-Find UI/UX issues by screenshot review and, when fixes are wanted, fix
-them in tight commits. The screenshot matrix is the discovery loop —
+Act as a screenshot-driven UI/UX reviewer and, only when authorized, a
+surgical fixer. Prioritize authorized scope and valid evidence → grounded
+issue and root-cause conclusions → requested coverage → surgical authorized
+changes.
+
+## Standing rules
+
+The screenshot matrix is the discovery loop —
 don't skip it because "the change looks small." A screenshot you never
 confirmed actually rendered is worse than no screenshot: it hides the
 regression behind a loading spinner.
+
+- **Review-only boundary:** If the ask was to audit, review, screenshot,
+  or verify, stop after the root-cause probes and report each issue with
+  its severity (blocks use, degrades use, or cosmetic), confidence,
+  route × viewport × theme, the screenshot, the probe result and the
+  `file:line` of the cause; run steps 7–8 only when the user asks for fixes
+  or confirms a fix you proposed, not when they only agree that the issues
+  are real. Mark an unresolved cause as unknown rather than inventing a
+  `file:line`.
+- Fix **root causes, not symptoms**; probe every issue before editing.
+- Do **not** add features, refactor architecture, introduce
+  dependencies, or write new tests, and touch a test only when an
+  existing one breaks. The isolated capture-driver setup in **Setup**
+  is the defined dependency exception.
+- **Keep the repo clean.** The browser driver is the repo's existing
+  dependency or installed in the script directory; capture script +
+  screenshots live outside the repo (or a gitignored path). Confirm
+  `git status` shows only the intended app fix — never the harness, the
+  driver, or the PNGs.
 
 ## Loop
 
@@ -21,24 +46,20 @@ regression behind a loading spinner.
 3. **Capture** the matrix with the harness in
    `references/playwright-harness.md`. Keep the harness structure
    (mocks, content wait, error capture, verification) unchanged;
-   parameterize the port, API base, fixtures and routing, auth and theme
-   seed, and the capture matrix, including each entry's `media`, `steps`
-   and choice of one of the harness's existing viewports, and delete the
-   font-abort route only when the font host is reachable.
+   parameterize the port, API base and observed request surface, fixtures
+   and routing, auth and theme seed, and the capture matrix, including each
+   entry's `media`, `steps`, final route/state checks and choice of one of
+   the harness's existing viewports, and delete the font-abort route only
+   when the font host is reachable.
 4. **Confirm each shot rendered** before trusting it. See **Verify the
-   capture** — read the harness's `UNRENDERED` and `UNMOCKED` output,
-   then hash the PNGs; identical hashes across distinct routes mean a
-   route never rendered.
+   capture** — read the harness's stage failures, `UNRENDERED`,
+   `UNMOCKED` and coverage/media diagnostics, then hash the PNGs and
+   investigate duplicates without treating them as verdicts.
 5. **Review** every PNG against the **Review checklist**. List issues
    first; don't fix yet.
 6. **Probe root cause** for every issue with a one-shot `page.evaluate`
    before editing. Reading code excerpts guesses wrong on framework
-   traps. If the ask was to audit, review, screenshot, or verify, stop
-   here and report each issue with its severity (blocks use, degrades
-   use, or cosmetic), confidence, route × viewport × theme, the
-   screenshot, the probe result and the `file:line` of the cause; run
-   steps 7–8 only when the user asks for fixes or confirms a fix you
-   proposed, not when they only agree that the issues are real.
+   traps. Apply the **Review-only boundary** after the probes.
 7. **Fix in themed batches**, one commit each. Re-capture after each
    batch and confirm the issue is gone.
 8. **Quality gates + clean repo** before commit. See **Quality bar**.
@@ -62,6 +83,13 @@ regression behind a loading spinner.
       `PLAYWRIGHT_BROWSERS_PATH` is set in the environment; the runtime
       reads the same variable, so leave it as-is and just verify a
       launch (`chromium.launch()`) succeeds before capturing.
+    - Establish the installed driver and browser versions and check the
+      requested media APIs against their current official documentation.
+      Reusing an install does not establish capability. Confirm each
+      requested media query's effective value in the target page before
+      relying on a preference capture; API/schema support and browser
+      rendering support are separate. Keep unsupported or ignored modes
+      explicitly unsupported or unverified, never passing evidence.
 2. **Capture against a production build, not the dev server.** Dev
    servers (Vite, webpack, Next dev) lazily compile route-split / heavy
    module graphs on first hit; under headless automation a heavy route
@@ -108,14 +136,30 @@ regression behind a loading spinner.
 
 ## Auth + mocks
 
-- **Intercept every API call** in the browser context
-  (`context.route("**/<api-base>/**", …)`) and fulfill plausible JSON —
-  the real backend is usually blocked from the sandbox. An un-mocked
-  call hangs or errors and the page never leaves loading.
+- **Mock every awaited response needed by the selected route/state.**
+  Derive request identity from the actual method and full URL, preserving
+  relevant query and body distinctions (and headers when they select a
+  response). Return the discovered status, headers/content type and body
+  shape for success and error states, including non-JSON or bodyless
+  responses when required. Await asynchronous fixture selection and
+  fulfillment; diagnose selection/fulfillment failures and unmatched calls
+  explicitly. Never forward an unknown call live or substitute invented
+  data to make a shot reviewable.
+- **Declare the interception surface and its limits.** Match the discovered
+  browser API origins/paths with `context.route`, block service workers in
+  the capture context, and compare matched hits with independently observed
+  relevant browser requests. A matching route proves only matched browser
+  interception: service-worker traffic, WebSockets, server-side calls,
+  other origins and calls outside the match need separate accounting when
+  the selected state uses them. Establish the required mocks for those
+  channels or report the affected evidence as unverified; an empty
+  `UNMOCKED` list alone does not prove full backend/API coverage. The real
+  backend is usually blocked from the sandbox; missing responses can leave
+  a page loading or in error.
 - **Return arrays where the app maps over a collection.** A scalar or
   `"ok"` string where an array is expected throws
   `(x ?? []).map is not a function` and trips the error boundary — a
-  self-inflicted "bug" that isn't in the code.
+  fixture-induced error; trace the actual cause before assigning app fault.
 - **Seed auth before first paint** with `addInitScript` writing whatever
   token/session the app checks, and mock the session/identity endpoint
   to return a user. For public pages, return `401` from the session
@@ -136,41 +180,50 @@ regression behind a loading spinner.
   text" or `networkidle` check passes prematurely (e.g. just before an
   auth redirect kicks off the next load). Wait for a known content
   selector/text to appear (generous timeout), then a short settle, then
-  shoot.
+  shoot. Keep setup, navigation, emulation, state, readiness, capture and
+  final diagnostics inside a stage-aware per-case error boundary. Record
+  the failed stage and available evidence, attempt owned context/browser
+  cleanup without masking the original failure, and handle later cases
+  where feasible.
 
 ## Verify the capture (cheap, catches silent failures)
 
-- **Any shot whose content wait missed or that threw a page error is
-  un-rendered, whatever its hash.** The harness saves it as
-  `<name>__UNRENDERED.png` and lists it at the end; probe it before
-  review.
-- **Reviewed shots print no `UNMOCKED:` line.** An unmocked call gets a
-  placeholder (`[]` for a GET, `{ ok: true }` otherwise) that breaks any
-  page expecting an object and looks like an app bug. Add a typed fixture
-  and re-capture.
-- **Hash every PNG** (`md5sum`). Identical hashes across distinct
-  routes, or between a shot whose `steps` set a state and the base shot
-  of its route, mean the route or state did not render — you captured
-  the same loading/error screen. Re-navigate or fix the harness; never
-  review or commit off un-rendered shots.
-- **Identical hashes between media variants** of the same route
-  (light/dark, contrast, forced-colors, reduced-transparency) mean the
-  app ignores that feature. If both shots passed their content
-  wait, file it as a review finding (for light/dark, a Theme issue), not
-  a capture failure. Reduced motion is the exception: the harness
-  disables animations in every shot, so a correct app and one that
-  ignores the preference hash the same, and the match proves nothing.
-  Check it with the harness's computed-style probe under
-  `reducedMotion: "reduce"`, compared with the same element under
-  `"no-preference"` (`animationName`, `animationDuration`,
-  `transitionDuration` of the animated elements), or in code.
+- **Classify only after successful screenshot acquisition and final
+  observed evidence.** A missed content wait or page error, including one
+  emitted during capture, makes a shot un-rendered, whatever its hash.
+  Recheck final route, expected content/state and effective media after
+  acquisition; a changed or unverifiable result is not valid evidence.
+  The harness labels an acquired invalid PNG `<name>__UNRENDERED.png`;
+  failed acquisition is a stage failure, not a valid screenshot. Probe
+  invalid evidence before review; this covers the observed window, not
+  all future errors.
+- **Reviewed shots print no `UNMOCKED:` line or fixture failure.** Add
+  typed fixtures and re-capture; resolve relevant out-of-surface requests
+  and channel limits under **Auth + mocks** before trusting the shot.
+- **Hash every PNG** (`md5sum`). Duplicate bytes across routes, states or
+  media variants are diagnostic clues. Compare final route/state,
+  expected content, API/fixture and error evidence, DOM/readiness and
+  whether the media behavior applies. Identical valid pixels can be
+  legitimate; file a finding only with evidence of an expected difference
+  being absent. Re-navigate or repair the harness when evidence shows a
+  capture failure; never review or commit off un-rendered shots.
+- **Verify reduced motion by mechanism and intent.** Compare the same
+  element under effective `"no-preference"` and `"reduce"` using the
+  relevant CSS rules/keyframes, JavaScript preference handling, SVG or
+  Web Animations API behavior and appropriate live observations. Computed
+  `animationName`, `animationDuration`, `transitionDuration` or
+  `scrollBehavior` alone cannot certify every mechanism. Motion may be
+  removed, reduced or replaced rather than eliminated. The harness's
+  animation-disabled PNGs and their hashes do not prove support.
 - **Probe before blaming the code.** For any blank/stuck/odd shot, read
   the harness's recorded API hits and console/page errors for that shot,
   together with a one-shot `page.evaluate` dump of `location.href` and
   trimmed `document.body.innerText`. A `page.evaluate` alone cannot see
-  intercepted requests or console events. This distinguishes a
-  harness/mock artifact from a real app bug (e.g. it reveals "only the
-  auth endpoints fired, the route's own queries never did").
+  intercepted requests or console events. Treat observations as causal
+  hypotheses: trace actual requests, responses, fixtures, state, guards,
+  mounting, CSS and readiness before blaming or exonerating app code.
+  Only auth calls firing can suggest a guard or mount problem, but does
+  not establish its cause.
 
 ## Review checklist
 
@@ -189,8 +242,9 @@ Per PNG, in both light and dark and at phone + desktop widths:
 - **A11y modes:** drive `colorScheme`, `contrast: "more"`,
   `reducedMotion: "reduce"`, and `forcedColors: "active"` through
   `emulateMedia` — they are routinely unstyled. A still shot cannot
-  show motion, so judge reduced motion from the computed-style probe or
-  the CSS, not from the screenshot.
+  show motion, so apply **Verify reduced motion by mechanism and intent**.
+  Confirm driver/browser capability and effective queries as in **Setup**;
+  unsupported or ignored modes remain unsupported or unverified.
   `prefers-reduced-transparency` is not an `emulateMedia` option, and
   unknown keys are silently ignored, so a call that raises no error
   proves nothing. In Chromium, drive it over CDP with the harness's
@@ -204,18 +258,9 @@ Per PNG, in both light and dark and at phone + desktop widths:
 
 ## Quality bar
 
-- Fix **root causes, not symptoms**.
-- Do **not** add features, refactor architecture, introduce
-  dependencies, or write new tests, and touch a test only when an
-  existing one breaks.
 - Gates before each commit, using the commands this repo's scripts
   define: typecheck clean, the tests covering the touched paths green,
   full test suite green.
-- **Keep the repo clean.** The browser driver is the repo's existing
-  dependency or installed in the script directory; capture script +
-  screenshots live outside the repo (or a gitignored path). Confirm
-  `git status` shows only the intended app fix — never the harness, the
-  driver, or the PNGs.
 
 ## Self-check
 
@@ -225,14 +270,16 @@ Before declaring a sweep done, confirm:
   dependency or installed in the script directory, with the manifest and
   lockfile untouched; a chromium binary installed; a `chromium.launch()`
   confirmed to succeed before the first capture; and the capture script
-  placed where `import "playwright"` resolves.
+  placed where `import "playwright"` resolves. Driver/browser versions,
+  requested media API capability and effective queries were established;
+  unsupported/ignored modes remain explicitly unsupported or unverified.
 - [ ] The capture used the recipe in `references/playwright-harness.md` with
   its structure (mocks, content wait, error capture, verification)
-  unchanged, parameterizing only the port, the API base, the fixtures and
-  routing, the auth and theme seed, and the capture matrix (each entry's
-  `media`, `steps` and choice of one of the existing viewports), and at most
-  deleting the font-abort route when the font host is reachable — not a
-  harness written from scratch.
+  unchanged, parameterizing only the port, the API base and observed request
+  surface, the fixtures and routing, the auth and theme seed, and the capture
+  matrix (each entry's `media`, `steps`, final route/state checks and choice
+  of one of the existing viewports), and at most deleting the font-abort
+  route when the font host is reachable — not a harness written from scratch.
 - [ ] Every shot was taken against a production build served on a stable
   port that matches `BASE_URL` — a dev server only for a trivial app with
   no route splitting; any chrome that differs from dev because the build
@@ -241,8 +288,12 @@ Before declaring a sweep done, confirm:
   shapes were each read out of this repo — the `dev`/`preview`/`start`
   script or framework config, the HTTP client or `.env*`, the router
   config, and the API client's types or real fixtures — not assumed.
-- [ ] Every API call under the discovered base is intercepted and fulfilled
-  with plausible JSON, and no reviewed shot printed an `UNMOCKED:` line;
+- [ ] Required responses for selected states have awaited, typed fixtures
+  keyed by actual method/URL and relevant query/body/header distinctions,
+  with the discovered success/error status and response shape; no reviewed
+  shot printed `UNMOCKED` or fixture failures. Matched interception was
+  compared with independently observed relevant requests, and applicable
+  channel limits were accounted for without claiming complete backend coverage;
   endpoints the app maps over return arrays; auth is seeded before first
   paint with `addInitScript` and the session/identity endpoint is mocked,
   returning `401` for the public routes.
@@ -256,24 +307,25 @@ Before declaring a sweep done, confirm:
   desktop widths in both light and dark, plus the interaction states under
   review, each in at least one viewport and theme, driven by an entry's
   `steps` and named by its `state`.
-- [ ] No shot reviewed as rendered appears in the harness's `UNRENDERED`
-  list (content wait missed or page error), whatever its hash. Every PNG
-  was hashed (`md5sum`), and no two distinct routes, and no state shot and
-  its route's base shot, share a hash; identical hashes between media
-  variants of one route, other than reduced motion, were filed as findings
-  rather than re-captured when both shots passed their content wait, and
-  reduced motion was judged by the computed-style probe or in code, never by
-  its hash. Any blank, stuck, or odd shot got its recorded API hits and
-  console/page errors read, together with a one-shot `page.evaluate` dump of
-  `location.href` and trimmed `document.body.innerText`, before the app's
-  code was blamed.
+- [ ] Reviewed PNGs were acquired successfully and classified only after
+  final route/content/state/media and observed error evidence, including
+  errors during capture; none is `UNRENDERED` or an unresolved stage failure.
+  Stage diagnostics survived failures and owned cleanup was attempted
+  without masking the original failure, with later cases handled where feasible.
+  Every PNG was hashed (`md5sum`); duplicates were investigated against
+  route/state, content, API/errors, DOM/readiness and applicable media
+  behavior rather than treated as verdicts. Reduced motion was judged by
+  mechanism and intent, never by animation-disabled pixels or hashes.
+  Blank, stuck or odd shots got the combined API/error and `page.evaluate`
+  evidence and causal tracing before app code was blamed or exonerated.
 - [ ] Every PNG was reviewed against all five checklist groups — layout,
   theme, state, a11y modes, looks-wrong-but-correct — and the issue list was written
   before the first fix. `colorScheme`, `contrast: "more"`,
   `reducedMotion: "reduce"` and `forcedColors: "active"` were driven
-  through `emulateMedia`. `prefers-reduced-transparency` was driven over CDP
-  and confirmed with `matchMedia` before the shot, or, outside Chromium,
-  verified in code.
+  through `emulateMedia` with capability/effective-query verification, or
+  remained explicitly unsupported/unverified. `prefers-reduced-transparency`
+  was driven over CDP and confirmed with `matchMedia` before the shot, or,
+  outside Chromium, verified in code.
 - [ ] Nothing was "fixed" for looking wrong while being correct —
   intentional translucency/blur, deliberately muted "coming soon"
   controls, and brand-specific spacing were each confirmed against tokens

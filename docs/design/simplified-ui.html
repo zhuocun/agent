@@ -271,12 +271,10 @@ img, svg { display: block; }
   flex-direction: column;
   background: var(--canvas);
 }
-.main.welcome,
-.main.thread {
+.main.welcome {
   background: var(--welcome-ambient), var(--hero-gradient), var(--canvas);
 }
-.main.welcome .header,
-.main.thread .header { background: transparent; }
+.main.welcome .header { background: transparent; }
 .header {
   height: var(--header);
   flex: none;
@@ -412,14 +410,12 @@ img, svg { display: block; }
     var(--glass-shadow-key);
   transition: box-shadow var(--slow) var(--ease);
 }
-.main.welcome .composer,
-.main.thread .composer {
+.main.welcome .composer {
   background: var(--glass-strong-bg);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(1.05) brightness(var(--glass-brightness));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate)) contrast(1.05) brightness(var(--glass-brightness));
 }
-.main.welcome .composer::before,
-.main.thread .composer::before {
+.main.welcome .composer::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -435,8 +431,7 @@ img, svg { display: block; }
     var(--glass-shadow-ambient),
     var(--glass-shadow-key);
 }
-.main.welcome .composer:focus-within::before,
-.main.thread .composer:focus-within::before { opacity: 0; }
+.main.welcome .composer:focus-within::before { opacity: 0; }
 .composer-input {
   display: block;
   width: 100%;

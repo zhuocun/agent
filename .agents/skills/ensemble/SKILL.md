@@ -32,6 +32,6 @@ Priority order: **existing instruction hierarchy and user overrides → faithful
 
 ## Self-check
 
-- [ ] Every listed member the user did not exclude in this message was invoked on this invocation, before other work and even if invoked earlier, and its full actual instructions were obtained, or the unavailable member and host limit were named without a complete-activation claim.
+- [ ] This explicit invocation met every requirement of **Load first, every time** and **Respect host limits**, under those rules' stated conditions and fallbacks.
 - [ ] Applicable member instructions are considered together as explicit invocations, without inventing native capabilities, authority or list-order precedence.
-- [ ] User overrides, member prerequisites and lifecycles, the binding brief and completed work remain intact.
+- [ ] Every requirement of **Apply as directly invoked** and **Continue faithfully** was met, at the times and under the conditions each rule specifies.

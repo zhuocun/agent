@@ -21,8 +21,9 @@ OWNER = "sess-owner"
 GOAL = "Ship the export feature — done when: CI is green"
 READY = "- [ready] T1 Add the endpoint — done when: tests pass"
 DOING = "- [doing] T1 Add the endpoint — done when: tests pass; next: empty result set"
-WAITING = "- [waiting] T3 CI run — wake: CI finishes; check: ci status"
-USER = "- [user] T4 Push — ask: push to main?; asked: 2026-11-01"
+WAITING = ("- [waiting] T3 CI run — done when: required CI passes; "
+           "wake: CI finishes; check: ci status")
+USER = "- [user] T4 Push — done when: remote updated; ask: push to main?; asked: 2026-11-01"
 STATE = """# Agent loop
 
 goal: {goal}
@@ -40,9 +41,9 @@ INSTRUCTION = (
     " Run the next iteration: re-read the file, reconcile it with evidence, take "
     "the next actionable item (now T1), handle its gate first if it needs one, act, "
     "verify against its done criterion, update the file, then continue, fix or "
-    "stop. Begin your final message with the loop status line."
+    "stop. Include the loop facts in your final message under pass 7's applicable form rule."
 )
-NO_PROGRESS = "The queue did not change during the last automatic turn"
+NO_PROGRESS = "The hook's no-progress key did not change during the last automatic turn"
 LAST_TURN = "This is the last automatic turn the budget allows"
 HOOK_ENV_KEYS = ("CLAUDE_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR", "CLAUDE_SKILL_DIR")
 
@@ -155,12 +156,14 @@ class ContinueTest(Base):
         self.assert_block(self.hook(event(self.root)),
                           "1 actionable, 1 waiting, 1 need the user")
 
-    def test_after_blocks_ready_item_while_dependency_open(self):
+    def test_after_blocks_ready_until_owner_clears_edge(self):
         items = "\n".join([WAITING, "- [ready] T5 Deploy — done when: live; after: T3"])
         self.write_state(items=items)
         running = event(self.root, background_tasks=[{"id": "b1"}])
         self.assert_stop(self.hook(running))
-        self.write_state(items="- [ready] T5 Deploy — done when: live; after: T3")
+        self.write_state(items="- [ready] T5 Deploy — done when: live")
+        with open(self.state, "a", encoding="utf-8") as handle:
+            handle.write("- 2026-11-01T10:00Z T3 closed — required CI passes\n")
         self.assert_block(self.hook(running), "1 actionable")
 
     def test_message_names_first_actionable_item_past_blocked_one(self):
@@ -213,10 +216,13 @@ class IdleTest(Base):
     def test_waiting_without_waiter_blocks_once(self):
         self.write_state(items="\n".join([WAITING, USER]))
         text = ("[agent-loop] Loop idle in %s (turn 1/50): 1 waiting item(s) but no "
-                "background task is running. For each waiting item that needs an "
-                "external event, run its check; if the event has not happened, start "
-                "its waiter as a background command. If an item waits for nothing "
-                "external, change its status. Then end your turn." % self.state)
+                "background task is running. Re-read the state and run each waiting item's check. "
+                "If its event has not happened, follow pass 5's Waiter rule for this "
+                "host and mode: complete required blocking collection, use a supported "
+                "wake route within its lifetime, or record collection for the next "
+                "user message or explicit resume. Reconcile an item that needs no "
+                "external event. Complete required coverage before ending your turn. "
+                "Do not start an unsupported waiter or scheduled queue execution." % self.state)
         self.assertEqual(self.hook(event(self.root)), {"decision": "block", "reason": text})
         self.assert_stop(self.hook(event(self.root, continued=True)))
 
@@ -723,6 +729,9 @@ class CursorTest(HostBase):
 class AntigravityTest(HostBase):
     CONTINUE_KEY = ("reason", "continue")
 
+    def assert_stop(self, out):
+        self.assertEqual(out, {"decision": "stop"})
+
     def agy(self, ev):
         return self.run_host("antigravity", ev)
 
@@ -1010,7 +1019,8 @@ class DevinTest(HostBase):
         self.assertIn("hookSpecificOutput", self.devin(ev))
         for host in ("claude", "codex", "cursor", "antigravity"):
             with self.subTest(host=host):
-                self.assert_stop(self.run_host(host, ev))
+                expected = {"decision": "stop"} if host == "antigravity" else {}
+                self.assertEqual(self.run_host(host, ev), expected)
 
 
 if __name__ == "__main__":

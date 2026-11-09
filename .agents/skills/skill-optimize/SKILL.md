@@ -63,6 +63,6 @@ Validate applicable schema and repository constraints, then review whether the i
 - **Contract:** Does each change match pass 1's intended behavior, classification and authorized scope, with local procedures scoped to their reference?
 - **Routing and structure:** Does the artifact satisfy pass 2's naming, layout, metadata, description, body order, size, reference and script requirements?
 - **Execution and composition:** Can an agent apply pass 3's instructions unambiguously and independently in the intended domains?
-- **Rule integrity:** Are pass 4's rules stated once, exceptions attached, references stable, revisions complete and cuts behavior-neutral?
+- **Rule integrity:** Are pass 4's rules stated once, exceptions attached, references stable and whole-rule revisions complete? Do cuts claimed behavior-neutral leave routing, decisions, constraints, exceptions and completion conditions unchanged, and are behavior-changing removals deliberate, classified under pass 1 and within authorized scope?
 - **Examples:** Does the method remain sufficient without examples, and does each conditional exception covered by pass 5 have its positive example?
 - **Evidence:** Are pass 6's facts current, applicable checks complete, and effect claims limited to what the evidence establishes?

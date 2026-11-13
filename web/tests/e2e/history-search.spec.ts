@@ -2,7 +2,7 @@
 //
 // Mirrors projects.spec.ts: drive the real FE against the real BE on :8000.
 // Covers the advanced-search dialog end-to-end:
-//   - open the dialog from the sidebar "Advanced search" affordance
+//   - open the dialog from the account menu "Advanced search" item
 //   - a plain query matches conversations by title (no filters)
 //   - the project filter narrows results to the filed conversation
 //   - the date filter (dateFrom in the future) narrows results to none
@@ -71,7 +71,8 @@ test.describe("advanced history search", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    // --- Open the dialog from the sidebar affordance -------------------------
+    // --- Open the dialog from the account menu -------------------------------
+    await page.getByRole("button", { name: "Account menu" }).click();
     await page.getByTestId("sidebar-advanced-search").click();
     const dialog = page.getByTestId("search-dialog");
     await expect(dialog).toBeVisible();
@@ -136,6 +137,7 @@ test.describe("advanced history search", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
+    await page.getByRole("button", { name: "Account menu" }).click();
     await page.getByTestId("sidebar-advanced-search").click();
     await expect(page.getByTestId("search-dialog")).toBeVisible();
 

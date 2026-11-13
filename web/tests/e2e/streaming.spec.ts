@@ -17,7 +17,7 @@ import { expect, test } from "./coverage-fixture";
 
 import {
   BE_URL,
-  modelModeTrigger,
+  toolsTrigger,
   reloadIntoConversation,
   waitForBootstrap,
 } from "./helpers";
@@ -191,13 +191,10 @@ test.describe("streaming", () => {
       }
     });
 
-    // Toggle web search ON via the model-mode picker. The default tier ("auto")
-    // supports search, so the "Web search" section is present. Desktop project
+    // Toggle web search ON via the Tools menu. The default tier ("auto")
+    // supports search, so the "Web search" row is present. Desktop project
     // (Desktop Chrome) → the dropdown variant; open it, then click the toggle.
-    await modelModeTrigger(page).click();
-    // Web search now lives behind the "Advanced" collapsible (progressive
-    // disclosure); expand it before the toggle is reachable.
-    await page.getByTestId("picker-advanced").click();
+    await toolsTrigger(page).click();
     const toggle = page.getByTestId("web-search-toggle");
     await expect(toggle).toBeVisible({ timeout: 5_000 });
     await toggle.click();
@@ -351,13 +348,10 @@ test.describe("streaming", () => {
       }
     });
 
-    // Toggle JSON mode ON via the model-mode picker. Unlike web search, the
-    // "JSON output" section is NOT tier-gated, so it's always present. Desktop
+    // Toggle JSON mode ON via the Tools menu. Unlike web search, the
+    // "JSON output" row is NOT tier-gated, so it's always present. Desktop
     // project (Desktop Chrome) → the dropdown variant; open it, click the toggle.
-    await modelModeTrigger(page).click();
-    // JSON output now lives behind the "Advanced" collapsible (progressive
-    // disclosure); expand it before the toggle is reachable.
-    await page.getByTestId("picker-advanced").click();
+    await toolsTrigger(page).click();
     const toggle = page.getByTestId("json-mode-toggle");
     await expect(toggle).toBeVisible({ timeout: 5_000 });
     await toggle.click();

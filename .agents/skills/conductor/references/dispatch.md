@@ -27,8 +27,8 @@ Four sources can run a subagent when the host provides a supported in-product me
 
 Take the first available source in the family's order:
 
-- **Claude-family models**: Claude Code → Devin → Cursor.
-- **GPT-family models**: Codex → Devin → Cursor.
+- **Claude-family models**: Claude Code → Cursor → Devin.
+- **GPT-family models**: Codex → Devin.
 
 A mode-only route lets the caller pick a product mode that bundles model, effort and speed, but not a model or an effort; Devin child sessions are one. It is never a source's in-product mechanism, and it is the last resort: it ranks after every available route that carries the model per agent, the row's Fallback family included, and **Fallbacks** treats it as a source that offers no model of either family.
 

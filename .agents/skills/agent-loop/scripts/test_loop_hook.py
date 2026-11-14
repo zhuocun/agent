@@ -5,6 +5,7 @@ Each case runs the hook as a subprocess against a temporary workspace. Run from
 the skill directory (python3 scripts/test_loop_hook.py) or from anywhere else;
 the hook and SKILL.md are located relative to this file.
 """
+import hashlib
 import json
 import os
 import re
@@ -38,11 +39,13 @@ budget: {budget}
 ## Log
 """
 INSTRUCTION = (
-    " Run the next iteration: re-read the file, reconcile it with evidence, take "
+    " Run the next iteration: read the state, reconcile it with evidence, take "
     "the next actionable item (now T1), handle its gate first if it needs one, act, "
     "verify against its done criterion, update the file, then continue, fix or "
     "stop. Include the loop facts in your final message under pass 7's applicable form rule."
 )
+STATUS_HINT = (' For a state file too long to read whole, python3 "%s" status --state "%%s" '
+               'lists the next items and any problems.' % HOOK)
 NO_PROGRESS = "The hook's no-progress key did not change during the last automatic turn"
 LAST_TURN = "This is the last automatic turn the budget allows"
 HOOK_ENV_KEYS = ("CLAUDE_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR", "CLAUDE_SKILL_DIR")
@@ -58,6 +61,11 @@ def event(root, session=OWNER, continued=False, **extra):
           "background_tasks": [], "session_crons": []}
     ev.update(extra)
     return ev
+
+
+def digest_key(items, log_lines):
+    """The no-progress key the hook stores for these [id, status] pairs and Log count."""
+    return hashlib.sha256(json.dumps([items, log_lines]).encode("utf-8")).hexdigest()
 
 
 def clean_env(**extra):
@@ -141,7 +149,7 @@ class ContinueTest(Base):
     def test_continue_with_ready_exact_output(self):
         self.write_state()
         text = ("[agent-loop] Loop active in %s: turn 1/50, 1 actionable, 0 waiting, "
-                "0 need the user." % self.state) + INSTRUCTION
+                "0 need the user." % self.state) + INSTRUCTION + STATUS_HINT % self.state
         self.assertEqual(self.hook(event(self.root)), {"decision": "block", "reason": text})
         data = self.sidecar_data()
         self.assertEqual(sorted(data), ["goal", "key", "strikes", "turns"])
@@ -201,6 +209,139 @@ class ContinueTest(Base):
         self.assert_stop(self.hook(event(self.root)))
         self.assert_stop(self.hook(event(self.root), "--state",
                                    os.path.join(self.root, "missing.md")))
+
+
+class DependencyRuleTest(Base):
+    def closed(self, *ids):
+        with open(self.state, "a", encoding="utf-8") as handle:
+            for ident in ids:
+                handle.write("- 2026-11-01T10:00Z %s closed — tests pass\n" % ident)
+
+    def test_single_closed_dependency_is_met(self):
+        self.write_state(items="- [ready] T1 Deploy — done when: live; after: T0")
+        self.closed("T0")
+        self.assert_block(self.hook(event(self.root)), "1 actionable", "(now T1)")
+
+    def test_multi_id_after_needs_every_dependency_met(self):
+        for after, closed, actionable in (("T7, T8", ("T7", "T8"), True),
+                                          ("T7,T8", ("T7", "T8"), True),
+                                          ("T7 T8", ("T7", "T8"), True),
+                                          ("T7, T8", ("T7",), False),
+                                          ("T7, T8", (), False)):
+            with self.subTest(after=after, closed=closed):
+                self.write_state(items="- [ready] T1 Deploy — done when: live; after: %s; "
+                                       "next: run" % after)
+                self.closed(*closed)
+                out = self.hook(event(self.root))
+                if actionable:
+                    self.assert_block(out, "1 actionable", "(now T1)")
+                else:
+                    self.assert_stop(out)
+
+    def test_open_dependency_blocks_even_with_closure_line(self):
+        """Guard: behaviour kept from the earlier script."""
+        self.write_state(items="\n".join([USER.replace("T4", "T0"),
+                                          "- [ready] T1 Deploy — done when: live; after: T0"]))
+        self.closed("T0")
+        self.assert_stop(self.hook(event(self.root)))
+
+    def test_mixed_met_open_and_unknown_dependencies(self):
+        items = "\n".join(["- [ready] T1 A — done when: x; after: T0, T2",
+                           "- [ready] T2 B — done when: x; after: NEVER",
+                           "- [ready] T3 C — done when: x; after: T0"])
+        self.write_state(items=items)
+        self.closed("T0")
+        self.assert_block(self.hook(event(self.root)), "1 actionable", "(now T3)")
+
+    def test_cycle_blocks_its_items(self):
+        """Guard: behaviour kept from the earlier script."""
+        items = "\n".join(["- [ready] T1 A — done when: x; after: T2",
+                           "- [doing] T2 B — done when: x; after: T1"])
+        self.write_state(items=items)
+        self.assert_stop(self.hook(event(self.root)))
+
+    def test_present_format_file_with_closed_dependency_and_next(self):
+        items = "\n".join([DOING + "; after: T0", "- [ready] T2 Docs — done when: published"])
+        self.write_state(items=items)
+        self.closed("T0")
+        self.assert_block(self.hook(event(self.root)), "2 actionable", "(now T1)")
+
+    def test_worker_held_waiting_item_with_running_task_gives_no_turn(self):
+        """Guard: behaviour kept from the earlier script."""
+        worker = ("- [waiting] T3 Port module — done when: tests pass; wake: worker w1; "
+                  "check: test -f out/T3.md")
+        self.write_state(items=worker)
+        self.assert_stop(self.hook(event(self.root, background_tasks=[{"id": "w1"}])))
+        self.assertFalse(os.path.exists(self.sidecar))
+        self.assert_block(self.hook(event(self.root)), "1 waiting item(s) but no background")
+
+    def test_every_after_field_counts(self):
+        for item in ("- [ready] T2 X — done when: y; after: T0; after: T1",
+                     "- [ready] T2 X — done when: y; after: ; next: go after: T1"):
+            with self.subTest(item=item):
+                self.write_state(items="\n".join([USER.replace("T4", "T1"), item]))
+                self.closed("T0")
+                self.assert_stop(self.hook(event(self.root)))
+
+    def test_closure_id_comes_before_the_evidence(self):
+        self.write_state(items="- [ready] T1 Deploy — done when: live; after: T5")
+        with open(self.state, "a", encoding="utf-8") as handle:
+            handle.write("- 2026-11-01T10:00Z T9 reopened — the T5 closed earlier was wrong\n")
+        self.assert_stop(self.hook(event(self.root)))
+        self.write_state(items="- [ready] T1 Deploy — done when: live; after: T0")
+        with open(self.state, "a", encoding="utf-8") as handle:
+            handle.write("- 2026-11-01T10:00Z T0 closed — PR closed after merge\n"
+                         "- 2026-11-01T10:05Z T8 closed\n")
+        self.assert_block(self.hook(event(self.root)), "1 actionable", "(now T1)")
+
+    def test_long_log_token_stays_fast(self):
+        self.write_state()
+        with open(self.state, "a", encoding="utf-8") as handle:
+            handle.write("- " + "x" * 40000 + "\n")
+        proc = subprocess.run([sys.executable, HOOK], input=json.dumps(event(self.root)),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True, env=clean_env(), cwd=self.elsewhere,
+                              timeout=3)
+        self.assert_block(self.check_output(proc), "turn 1/50")
+
+    def test_huge_numbers_do_not_fail(self):
+        huge = "9" * 5000
+        self.write_state(items=READY + "; tries: " + huge)
+        self.assert_block(self.hook(event(self.root)), "1 actionable")
+        self.write_state(budget=huge)
+        self.assert_block(self.hook(event(self.root)), "turn 1/")
+
+    def test_notes_sections_are_ignored(self):
+        notes = ("\n## Notes\n- [ready] T8 Not an item — done when: x\n"
+                 "- 2026-11-01T10:00Z T0 closed — not a closure\n")
+        text = STATE.format(goal=GOAL, owner=OWNER, stop="", budget=50,
+                            items="- [ready] T1 A — done when: x; after: T0")
+        for placed in (text.replace("\n## Log", notes + "\n## Log"), text + notes):
+            with self.subTest(placed=placed[-60:]):
+                self.write_state(text=placed)
+                self.assert_stop(self.hook(event(self.root)))
+                self.write_state(text=placed.replace("; after: T0", ""))
+                self.assert_block(self.hook(event(self.root)), "1 actionable", "(now T1)")
+                self.assertEqual(self.sidecar_data()["key"], digest_key([["T1", "ready"]], 0))
+
+    def test_crlf_line_endings(self):
+        text = STATE.format(goal=GOAL, owner=OWNER, stop="", budget=50,
+                            items="- [ready] T1 A — done when: x; after: T0")
+        text += "- 2026-11-01T10:00Z T0 closed — tests pass\n"
+        with open(self.state, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text.replace("\n", "\r\n"))
+        self.assert_block(self.hook(event(self.root)), "1 actionable", "(now T1)")
+        self.assertEqual(self.sidecar_data()["key"], digest_key([["T1", "ready"]], 1))
+
+    def test_bad_parallel_fails_closed(self):
+        for value in ("0", "two", "-1", "1.5"):
+            with self.subTest(value=value):
+                text = STATE.format(goal=GOAL, owner=OWNER, stop="", budget=50, items=READY)
+                self.write_state(text=text.replace("budget: 50\n",
+                                                   "budget: 50\nparallel: %s\n" % value))
+                self.assert_stop(self.hook(event(self.root)))
+        self.write_state(text=text.replace("budget: 50\n", "budget: 50\nparallel: 3\n"))
+        self.assert_block(self.hook(event(self.root)), "turn 1/50")
 
 
 class IdleTest(Base):
@@ -289,6 +430,11 @@ class GuardTest(Base):
                 self.write_state(budget=budget)
                 self.assert_stop(self.hook(event(self.root)))
 
+    def test_zero_padded_budget_keeps_its_value(self):
+        self.write_state(budget="0000000001")
+        self.assert_block(self.hook(event(self.root)), "turn 1/1,")
+        self.assert_stop(self.hook(event(self.root, continued=True)))
+
     def test_budget_absent_defaults_to_50(self):
         text = STATE.format(goal=GOAL, owner=OWNER, stop="", budget=50, items=READY)
         self.write_state(text=text.replace("budget: 50\n", ""))
@@ -343,11 +489,15 @@ class AccountingTest(Base):
     def test_no_progress(self):
         self.write_state()
         self.assertNotIn(NO_PROGRESS, self.reason(self.hook(event(self.root))))
-        self.assert_block(self.hook(event(self.root, continued=True)), "turn 2/50", NO_PROGRESS)
+        self.assert_block(self.hook(event(self.root, continued=True)), "turn 2/50", NO_PROGRESS,
+                          "2 more turns with the same key end automatic continuation")
         self.assertEqual(self.sidecar_data()["strikes"], 1)
+        self.assert_block(self.hook(event(self.root, continued=True)), "turn 3/50", NO_PROGRESS,
+                          "another turn with the same key ends automatic continuation")
+        self.assertEqual(self.sidecar_data()["strikes"], 2)
         self.assert_stop(self.hook(event(self.root, continued=True)))
         data = self.sidecar_data()
-        self.assertEqual((data["turns"], data["strikes"]), (2, 2))
+        self.assertEqual((data["turns"], data["strikes"]), (3, 3))
 
     def test_user_turn_resets_strikes(self):
         self.write_state()
@@ -357,13 +507,18 @@ class AccountingTest(Base):
         self.assertNotIn(NO_PROGRESS, text)
         self.assertEqual(self.sidecar_data()["strikes"], 0)
 
-    def test_next_change_counts_as_progress(self):
+    def test_next_change_is_not_progress(self):
         self.write_state(items=DOING)
         self.hook(event(self.root))
         self.write_state(items=DOING.replace("empty result set", "pagination"),
                          keep_sidecar=True)
-        text = self.assert_block(self.hook(event(self.root, continued=True)), "turn 2/50")
-        self.assertNotIn(NO_PROGRESS, text)
+        self.assert_block(self.hook(event(self.root, continued=True)), "turn 2/50", NO_PROGRESS)
+
+    def test_message_names_the_status_command(self):
+        self.write_state()
+        text = self.reason(self.hook(event(self.root)))
+        self.assertIn(' status --state "%s"' % self.state, text)
+        self.assertIn('python3 "%s"' % HOOK, text)
 
     def test_status_and_log_changes_count_as_progress(self):
         self.write_state(items=READY)
@@ -525,7 +680,7 @@ def devin_event(session=OWNER, continued=False, **extra):
 
 def active_text(state, turn=1):
     return ("[agent-loop] Loop active in %s: turn %d/50, 1 actionable, 0 waiting, "
-            "0 need the user." % (state, turn)) + INSTRUCTION
+            "0 need the user." % (state, turn)) + INSTRUCTION + STATUS_HINT % state
 
 
 class HostBase(Base):
@@ -617,8 +772,10 @@ class CodexTest(HostBase):
     def test_no_progress_across_automatic_turns(self):
         self.write_state()
         self.message(self.codex(codex_event(self.root)), "reason", "block")
-        text = self.message(self.codex(codex_event(self.root, continued=True)), "reason", "block")
-        self.assertIn(NO_PROGRESS, text)
+        for _ in range(2):
+            text = self.message(self.codex(codex_event(self.root, continued=True)),
+                                "reason", "block")
+            self.assertIn(NO_PROGRESS, text)
         self.assert_stop(self.codex(codex_event(self.root, continued=True)))
 
     def test_roots_are_cwd_only_and_no_waiter_signal(self):
@@ -692,10 +849,11 @@ class CursorTest(HostBase):
     def test_positive_loop_count_is_automatic_turn(self):
         self.write_state()
         self.cursor(cursor_event(self.root))
-        text = self.message(self.cursor(cursor_event(self.root, loop_count=1)),
-                            "followup_message")
-        self.assertIn(NO_PROGRESS, text)
-        self.assert_stop(self.cursor(cursor_event(self.root, loop_count=2)))
+        for count in (1, 2):
+            text = self.message(self.cursor(cursor_event(self.root, loop_count=count)),
+                                "followup_message")
+            self.assertIn(NO_PROGRESS, text)
+        self.assert_stop(self.cursor(cursor_event(self.root, loop_count=3)))
         self.assertNotIn(NO_PROGRESS, self.message(
             self.cursor(cursor_event(self.root, loop_count=0)), "followup_message"))
 
@@ -786,13 +944,14 @@ class AntigravityTest(HostBase):
         self.write_state()
         first = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
         self.assertNotIn(NO_PROGRESS, first)
-        second = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
-        self.assertIn(NO_PROGRESS, second)
-        self.assertEqual((self.sidecar_data()["strikes"], self.sidecar_data()["pending"]),
-                         (1, OWNER))
+        for strikes in (1, 2):
+            text = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
+            self.assertIn(NO_PROGRESS, text)
+            self.assertEqual((self.sidecar_data()["strikes"], self.sidecar_data()["pending"]),
+                             (strikes, OWNER))
         self.assert_stop(self.agy(antigravity_event(self.root)))
         data = self.sidecar_data()
-        self.assertEqual((data["turns"], data["strikes"], data["pending"]), (2, 2, None))
+        self.assertEqual((data["turns"], data["strikes"], data["pending"]), (3, 3, None))
         third = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
         self.assertNotIn(NO_PROGRESS, third)
         self.assertEqual(self.sidecar_data()["strikes"], 0)

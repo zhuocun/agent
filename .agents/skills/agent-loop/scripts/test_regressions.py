@@ -42,7 +42,7 @@ class DependencyTest(hook_tests.Base):
                     self.assert_stop(self.hook(ev))
                     self.assertFalse(os.path.exists(self.sidecar))
 
-    def test_legacy_closure_remains_blocked_until_owner_clears_edge(self):
+    def test_closed_dependency_is_met_without_editing_the_dependant(self):
         for status in ("ready", "doing"):
             with self.subTest(status=status):
                 item = "- [%s] T1 Deploy — done when: live; next: verify; after: T0" % status
@@ -51,11 +51,10 @@ class DependencyTest(hook_tests.Base):
                     handle.write("- 2026-11-01T10:00Z T0 closed — required CI passes\n")
                 with open(self.state, encoding="utf-8") as handle:
                     before = handle.read()
-                self.assert_stop(self.hook(hook_tests.event(self.root)))
-                self.assertFalse(os.path.exists(self.sidecar))
+                self.assert_block(self.hook(hook_tests.event(self.root)), "now T1",
+                                  "1 actionable")
                 with open(self.state, encoding="utf-8") as handle:
                     self.assertEqual(handle.read(), before)
-                # Simulate the owner's evidence-based, single saved reconciliation.
                 reconciled = before.replace("; after: T0", "")
                 self.write_state(text=reconciled)
                 self.assert_block(self.hook(hook_tests.event(self.root)), "now T1")
@@ -101,12 +100,12 @@ class AdapterRepairTest(hook_tests.HostBase):
 
 
 class FingerprintTest(hook_tests.Base):
-    def test_key_retains_ordered_id_status_next_and_log_count_algorithm(self):
+    def test_key_is_ordered_id_status_and_log_count(self):
         self.write_state(items=hook_tests.DOING)
         self.log(1)
         self.hook(hook_tests.event(self.root))
         expected = hashlib.sha256(json.dumps(
-            [[["T1", "doing", "empty result set"]], 1]).encode("utf-8")).hexdigest()
+            [[["T1", "doing"]], 1]).encode("utf-8")).hexdigest()
         self.assertEqual(self.sidecar_data()["key"], expected)
 
     def test_criterion_dependency_and_same_count_evidence_edits_are_not_progress(self):

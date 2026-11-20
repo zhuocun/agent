@@ -63,8 +63,9 @@ assignment into a different shell unchanged.
   version and tier; a bare family or partial name such as `gpt` does not
   guarantee tier, effort or speed. Spell effort exactly and check the selected
   model's support. When the assigned level is missing, use the highest supported
-  level below it, as **Effort limits** in `dispatch.md` requires. If an ID is
-  rejected, select the next-newest listed ID of the same family and tier; never
+  level below it, as **Effort limits** in `dispatch.md` requires. If a delegated
+  role's ID is rejected, select the next-newest eligible listed ID of the same
+  model line; for an advisor, follow **Advisor model** in `advisor.md`; never
   let the CLI choose its default.
 - **Speed**: apply **Speed modes** in `dispatch.md` to select Standard, Fast or
   Ultrafast from the user's explicit scope and current source support. A Fast
@@ -456,10 +457,20 @@ saving it.
   `models` subcommand) and select the newest required model matching **Tiers.**
   in `dispatch.md`. Always pass `--model` explicitly so saved `settings.json`
   defaults do not apply; an unknown model exits 1 rather than falling back.
-  Claude top-tier models require an eligible OAuth or ADC account and are absent
-  under `GEMINI_API_KEY` (`modelProvider: "gemini"`), and OpenAI's top-tier line
-  is not offered. Do not use `Orchestrator` multi-model entries or any tier
-  **Tiers.** in `dispatch.md` forbids.
+  For subscription sign-in, Google's top-tier line (Gemini 4 Neon today) is
+  available on eligible Google AI Pro plans, Google AI Ultra and Gemini
+  Enterprise, and its too-expensive-edge model (Gemini 4 Carbon today) requires
+  Ultra or Gemini Enterprise. For ADC, check model access for the effective
+  Gemini Enterprise project and region. With `modelProvider: "gemini"` and
+  `GEMINI_API_KEY` against Google's Gemini API, both models require an eligible
+  paid Gemini API project; for an authorized custom endpoint
+  (`GOOGLE_GEMINI_BASE_URL`), check that endpoint's model access; the model
+  list alone does not establish that the key can run the selected model. Claude top-tier models require an eligible OAuth or ADC
+  account and are absent under `GEMINI_API_KEY`; OpenAI's top-tier line is not
+  offered. Do not use `Orchestrator` multi-model entries or any model **Tiers.**
+  in `dispatch.md` forbids for delegated work, such as Gemini 4 Hydrogen,
+  Gemini 3.8 Flash, Gemini 4 Argon, or Gemini 4 Carbon outside an advisor
+  consultation.
 - **Effort**: `agy` accepts a suffixed catalog slug (`--model <model>-<level>`),
   a base slug with `--effort <low|medium|high|xhigh|max>`, or matching slug and
   `--effort`; a base slug without `--effort` uses the model's default level, so

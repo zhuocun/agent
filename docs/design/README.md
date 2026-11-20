@@ -32,8 +32,10 @@ The live implementation in `web/src/app/globals.css` is downstream of PRD 06. It
 - `03-anti-patterns.md` — failure modes. Things that violate the pillars in ways that are easy to ship and hard to walk back.
 - `04-rationale.md` — recorded design decisions. Each entry names a choice, the alternatives considered, the principle that decided it, and the date.
 
-Adjacent brand material in this directory (not part of the principle canon, but reachable from here):
+Adjacent material in this directory (not part of the principle canon, but reachable from here):
 
+- `current-ui.html` — standalone snapshot of the shipped UI, one screen per template.
+- `simplified-ui.html` — a simpler draft of those same screens. `simplified-ui.md` records what was cut and why.
 - `BRAND_BRIEF.md` — the brand brief.
 - `logos/README.md` — logo concepts, charters/addenda, and rendered assets.
 - `audits/GPT55-REVIEW.md` — merged GPT-5.5 screenshot re-review.

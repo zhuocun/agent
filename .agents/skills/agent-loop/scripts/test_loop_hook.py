@@ -5,7 +5,6 @@ Each case runs the hook as a subprocess against a temporary workspace. Run from
 the skill directory (python3 scripts/test_loop_hook.py) or from anywhere else;
 the hook and SKILL.md are located relative to this file.
 """
-import hashlib
 import json
 import os
 import re
@@ -46,7 +45,6 @@ INSTRUCTION = (
 )
 STATUS_HINT = (' For a state file too long to read whole, python3 "%s" status --state "%%s" '
                'lists the next items and any problems.' % HOOK)
-NO_PROGRESS = "The hook's no-progress key did not change during the last automatic turn"
 LAST_TURN = "This is the last automatic turn the budget allows"
 HOOK_ENV_KEYS = ("CLAUDE_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR", "CLAUDE_SKILL_DIR")
 
@@ -61,11 +59,6 @@ def event(root, session=OWNER, continued=False, **extra):
           "background_tasks": [], "session_crons": []}
     ev.update(extra)
     return ev
-
-
-def digest_key(items, log_lines):
-    """The no-progress key the hook stores for these [id, status] pairs and Log count."""
-    return hashlib.sha256(json.dumps([items, log_lines]).encode("utf-8")).hexdigest()
 
 
 def clean_env(**extra):
@@ -152,8 +145,8 @@ class ContinueTest(Base):
                 "0 need the user." % self.state) + INSTRUCTION + STATUS_HINT % self.state
         self.assertEqual(self.hook(event(self.root)), {"decision": "block", "reason": text})
         data = self.sidecar_data()
-        self.assertEqual(sorted(data), ["goal", "key", "strikes", "turns"])
-        self.assertEqual((data["turns"], data["strikes"]), (1, 0))
+        self.assertEqual(data["turns"], 1)
+        self.assertEqual(sorted(data), ["goal", "turns"])
 
     def test_continue_with_doing(self):
         self.write_state(items=DOING)
@@ -322,7 +315,6 @@ class DependencyRuleTest(Base):
                 self.assert_stop(self.hook(event(self.root)))
                 self.write_state(text=placed.replace("; after: T0", ""))
                 self.assert_block(self.hook(event(self.root)), "1 actionable", "(now T1)")
-                self.assertEqual(self.sidecar_data()["key"], digest_key([["T1", "ready"]], 0))
 
     def test_crlf_line_endings(self):
         text = STATE.format(goal=GOAL, owner=OWNER, stop="", budget=50,
@@ -331,7 +323,6 @@ class DependencyRuleTest(Base):
         with open(self.state, "w", encoding="utf-8", newline="") as handle:
             handle.write(text.replace("\n", "\r\n"))
         self.assert_block(self.hook(event(self.root)), "1 actionable", "(now T1)")
-        self.assertEqual(self.sidecar_data()["key"], digest_key([["T1", "ready"]], 1))
 
     def test_bad_parallel_fails_closed(self):
         for value in ("0", "two", "-1", "1.5"):
@@ -453,11 +444,10 @@ class GuardTest(Base):
 
     def test_corrupt_sidecar(self):
         for content in ("{not json", "[]", '"text"',
-                        json.dumps({"goal": None, "turns": -1, "key": None, "strikes": 0}),
-                        json.dumps({"goal": None, "turns": True, "key": None, "strikes": 0}),
-                        json.dumps({"goal": None, "turns": 0, "key": None, "strikes": -1}),
-                        json.dumps({"goal": None, "turns": 1.0, "key": None, "strikes": 0}),
-                        json.dumps({"goal": None, "key": None, "strikes": 0})):
+                        json.dumps({"goal": None, "turns": -1}),
+                        json.dumps({"goal": None, "turns": True}),
+                        json.dumps({"goal": None, "turns": 1.0}),
+                        json.dumps({"goal": None})):
             with self.subTest(content=content):
                 self.write_state()
                 self.write_sidecar(content)
@@ -486,54 +476,26 @@ class AccountingTest(Base):
         self.write_state(budget=2, keep_sidecar=True)
         self.assert_block(self.hook(event(self.root)), "turn 2/2")
 
-    def test_no_progress(self):
-        self.write_state()
-        self.assertNotIn(NO_PROGRESS, self.reason(self.hook(event(self.root))))
-        self.assert_block(self.hook(event(self.root, continued=True)), "turn 2/50", NO_PROGRESS,
-                          "2 more turns with the same key end automatic continuation")
-        self.assertEqual(self.sidecar_data()["strikes"], 1)
-        self.assert_block(self.hook(event(self.root, continued=True)), "turn 3/50", NO_PROGRESS,
-                          "another turn with the same key ends automatic continuation")
-        self.assertEqual(self.sidecar_data()["strikes"], 2)
+    def test_unchanged_queue_continues_until_budget(self):
+        """A long item whose ID, status and Log stay the same keeps its automatic turns."""
+        self.write_state(items=DOING, budget=4)
+        self.assert_block(self.hook(event(self.root)), "turn 1/4")
+        for turn in (2, 3, 4):
+            self.assert_block(self.hook(event(self.root, continued=True)), "turn %d/4" % turn)
         self.assert_stop(self.hook(event(self.root, continued=True)))
-        data = self.sidecar_data()
-        self.assertEqual((data["turns"], data["strikes"]), (3, 3))
+        self.assertEqual(self.sidecar_data(), {"goal": self.sidecar_data()["goal"], "turns": 4})
 
-    def test_user_turn_resets_strikes(self):
+    def test_retired_sidecar_fields_are_ignored_and_dropped(self):
         self.write_state()
-        self.hook(event(self.root))
-        self.hook(event(self.root, continued=True))
-        text = self.reason(self.hook(event(self.root)))
-        self.assertNotIn(NO_PROGRESS, text)
-        self.assertEqual(self.sidecar_data()["strikes"], 0)
-
-    def test_next_change_is_not_progress(self):
-        self.write_state(items=DOING)
-        self.hook(event(self.root))
-        self.write_state(items=DOING.replace("empty result set", "pagination"),
-                         keep_sidecar=True)
-        self.assert_block(self.hook(event(self.root, continued=True)), "turn 2/50", NO_PROGRESS)
+        self.write_sidecar(json.dumps({"goal": None, "turns": 2, "key": "old", "strikes": 7}))
+        self.assert_block(self.hook(event(self.root)), "turn 1/50")
+        self.assertEqual(sorted(self.sidecar_data()), ["goal", "turns"])
 
     def test_message_names_the_status_command(self):
         self.write_state()
         text = self.reason(self.hook(event(self.root)))
         self.assertIn(' status --state "%s"' % self.state, text)
         self.assertIn('python3 "%s"' % HOOK, text)
-
-    def test_status_and_log_changes_count_as_progress(self):
-        self.write_state(items=READY)
-        self.hook(event(self.root))
-        self.write_state(items=DOING, keep_sidecar=True)
-        self.assertNotIn(NO_PROGRESS, self.reason(self.hook(event(self.root, continued=True))))
-        self.log(1)
-        self.assertNotIn(NO_PROGRESS, self.reason(self.hook(event(self.root, continued=True))))
-
-    def test_text_outside_queue_items_is_not_progress(self):
-        self.write_state(items=DOING)
-        self.hook(event(self.root))
-        self.write_state(items=DOING.replace("tests pass", "all tests pass"),
-                         keep_sidecar=True)
-        self.assert_block(self.hook(event(self.root, continued=True)), NO_PROGRESS)
 
     def test_changing_goal_resets_turns(self):
         self.write_state(budget=1)
@@ -769,13 +731,12 @@ class CodexTest(HostBase):
                 self.write_state()
                 self.assert_stop(self.codex(codex_event(self.root, stop_hook_active=value)))
 
-    def test_no_progress_across_automatic_turns(self):
-        self.write_state()
+    def test_automatic_turns_continue_until_budget(self):
+        self.write_state(budget=3)
         self.message(self.codex(codex_event(self.root)), "reason", "block")
-        for _ in range(2):
-            text = self.message(self.codex(codex_event(self.root, continued=True)),
-                                "reason", "block")
-            self.assertIn(NO_PROGRESS, text)
+        for turn in (2, 3):
+            self.assertIn("turn %d/3" % turn, self.message(
+                self.codex(codex_event(self.root, continued=True)), "reason", "block"))
         self.assert_stop(self.codex(codex_event(self.root, continued=True)))
 
     def test_roots_are_cwd_only_and_no_waiter_signal(self):
@@ -846,16 +807,12 @@ class CursorTest(HostBase):
                 self.write_state()
                 self.assert_stop(self.cursor(cursor_event(self.root, conversation_id=value)))
 
-    def test_positive_loop_count_is_automatic_turn(self):
-        self.write_state()
-        self.cursor(cursor_event(self.root))
-        for count in (1, 2):
-            text = self.message(self.cursor(cursor_event(self.root, loop_count=count)),
-                                "followup_message")
-            self.assertIn(NO_PROGRESS, text)
+    def test_loop_counts_continue_until_budget(self):
+        self.write_state(budget=3)
+        for count in (0, 1, 2):
+            self.assertIn("turn %d/3" % (count + 1), self.message(
+                self.cursor(cursor_event(self.root, loop_count=count)), "followup_message"))
         self.assert_stop(self.cursor(cursor_event(self.root, loop_count=3)))
-        self.assertNotIn(NO_PROGRESS, self.message(
-            self.cursor(cursor_event(self.root, loop_count=0)), "followup_message"))
 
     def test_workspace_roots_then_project_dir(self):
         self.write_state()
@@ -901,7 +858,7 @@ class AntigravityTest(HostBase):
         self.assertEqual(self.agy(antigravity_event(self.root)),
                          {"decision": "continue", "reason": active_text(self.state)})
         data = self.sidecar_data()
-        self.assertEqual(sorted(data), ["goal", "key", "pending", "strikes", "turns"])
+        self.assertEqual(sorted(data), ["goal", "pending", "turns"])
         self.assertEqual((data["turns"], data["pending"]), (1, OWNER))
 
     def test_non_owner_and_stop_set(self):
@@ -940,30 +897,28 @@ class AntigravityTest(HostBase):
                 self.write_state()
                 self.assert_stop(self.agy(antigravity_event(self.root, conversationId=value)))
 
-    def test_pending_round_trip_and_no_progress(self):
-        self.write_state()
-        first = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
-        self.assertNotIn(NO_PROGRESS, first)
-        for strikes in (1, 2):
-            text = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
-            self.assertIn(NO_PROGRESS, text)
-            self.assertEqual((self.sidecar_data()["strikes"], self.sidecar_data()["pending"]),
-                             (strikes, OWNER))
+    def test_pending_round_trip_until_budget(self):
+        self.write_state(budget=3)
+        for turn in (1, 2, 3):
+            self.assertIn("turn %d/3" % turn, self.message(
+                self.agy(antigravity_event(self.root)), "reason", "continue"))
+            self.assertEqual(self.sidecar_data()["pending"], OWNER)
         self.assert_stop(self.agy(antigravity_event(self.root)))
         data = self.sidecar_data()
-        self.assertEqual((data["turns"], data["strikes"], data["pending"]), (3, 3, None))
-        third = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
-        self.assertNotIn(NO_PROGRESS, third)
-        self.assertEqual(self.sidecar_data()["strikes"], 0)
+        self.assertEqual((data["turns"], data["pending"]), (3, None))
 
     def test_pending_for_another_session_is_not_automatic(self):
-        self.write_state()
-        self.agy(antigravity_event(self.root))
-        data = self.sidecar_data()
-        data["pending"] = "sess-other"
-        self.write_sidecar(json.dumps(data))
-        self.assertNotIn(NO_PROGRESS, self.message(self.agy(antigravity_event(self.root)),
-                                                   "reason", "continue"))
+        items = "\n".join([WAITING, USER])
+        for pending, continues in (("sess-other", True), (OWNER, False)):
+            with self.subTest(pending=pending):
+                self.write_state(items=items)
+                self.write_sidecar(json.dumps({"goal": None, "turns": 0, "pending": pending}))
+                out = self.agy(antigravity_event(self.root))
+                if continues:
+                    self.assertIn("but no background task is running",
+                                  self.message(out, "reason", "continue"))
+                else:
+                    self.assert_stop(out)
 
     def test_budget_exhaustion_clears_pending(self):
         self.write_state(budget=1)
@@ -975,15 +930,14 @@ class AntigravityTest(HostBase):
 
     def test_sidecar_without_pending_is_valid(self):
         self.write_state()
-        self.write_sidecar(json.dumps({"goal": None, "turns": 0, "key": None, "strikes": 0}))
+        self.write_sidecar(json.dumps({"goal": None, "turns": 0}))
         self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
         self.assertEqual(self.sidecar_data()["pending"], OWNER)
 
     def test_corrupt_pending(self):
         self.accepted()
         for pending in (5, True, ["sess-owner"], {"id": OWNER}):
-            content = json.dumps({"goal": None, "turns": 0, "key": None, "strikes": 0,
-                                  "pending": pending})
+            content = json.dumps({"goal": None, "turns": 0, "pending": pending})
             with self.subTest(pending=pending):
                 self.write_state()
                 self.write_sidecar(content)
@@ -992,17 +946,14 @@ class AntigravityTest(HostBase):
                     self.assertEqual(handle.read(), content)
 
     def test_other_hosts_ignore_pending(self):
-        content = json.dumps({"goal": None, "turns": 0, "key": None, "strikes": 0,
-                              "pending": 5})
+        content = json.dumps({"goal": None, "turns": 0, "pending": 5})
         self.write_state()
         self.write_sidecar(content)
         self.assert_stop(self.agy(antigravity_event(self.root)))
         self.assert_block(self.hook(event(self.root)), "turn 1/50")
         self.write_state()
-        self.write_sidecar(json.dumps({"goal": None, "turns": 0, "key": None, "strikes": 0,
-                                       "pending": OWNER}))
-        self.assertNotIn(NO_PROGRESS, self.reason(self.run_host(
-            "codex", codex_event(self.root))))
+        self.write_sidecar(json.dumps({"goal": None, "turns": 0, "pending": OWNER}))
+        self.reason(self.run_host("codex", codex_event(self.root)))
         self.assertNotIn("pending", self.sidecar_data())
 
     def test_fully_idle_waiter_branch(self):
@@ -1033,36 +984,31 @@ class AntigravityTest(HostBase):
         self.assertEqual(self.agy(ev), {
             "decision": "continue", "reason": active_text(self.state)})
 
-    def unchanged_automatic_turn(self):
-        """Grant a continuation, then an unchanged automatic stop: strikes 1, pending set."""
+    def granted_turn(self):
+        """Grant a continuation: pending names this session."""
         self.write_state()
         self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
-        self.assertIn(NO_PROGRESS, self.message(self.agy(antigravity_event(self.root)),
-                                                "reason", "continue"))
-        data = self.sidecar_data()
-        self.assertEqual((data["strikes"], data["pending"]), (1, OWNER))
+        self.assertEqual(self.sidecar_data()["pending"], OWNER)
 
-    def assert_human_turn_continues(self):
-        """The next stop is a human turn: it continues with strikes reset to 0."""
+    def assert_human_turn_checks_missing_waiter(self):
+        """The next stop is a human turn, so a waiting item with no waiter gets one check."""
+        self.write_state(items="\n".join([WAITING, USER]), keep_sidecar=True)
         text = self.message(self.agy(antigravity_event(self.root)), "reason", "continue")
-        self.assertNotIn(NO_PROGRESS, text)
-        data = self.sidecar_data()
-        self.assertEqual((data["strikes"], data["pending"]), (0, OWNER))
+        self.assertIn("but no background task is running", text)
+        self.assertEqual(self.sidecar_data()["pending"], OWNER)
 
     def test_error_stop_clears_pending_before_human_turn(self):
-        self.unchanged_automatic_turn()
+        self.granted_turn()
         self.assert_stop(self.agy(antigravity_event(self.root, error="model error")))
-        data = self.sidecar_data()
-        self.assertEqual((data["strikes"], data["pending"]), (1, None))
-        self.assert_human_turn_continues()
+        self.assertIsNone(self.sidecar_data()["pending"])
+        self.assert_human_turn_checks_missing_waiter()
 
     def test_pause_and_resume_clears_pending(self):
-        self.unchanged_automatic_turn()
+        self.granted_turn()
         self.write_state(stop="paused", keep_sidecar=True)
         self.assert_stop(self.agy(antigravity_event(self.root)))
         self.assertIsNone(self.sidecar_data()["pending"])
-        self.write_state(keep_sidecar=True)
-        self.assert_human_turn_continues()
+        self.assert_human_turn_checks_missing_waiter()
 
     def test_owned_rejection_never_creates_sidecar(self):
         self.write_state()
@@ -1074,8 +1020,7 @@ class AntigravityTest(HostBase):
         self.assertFalse(os.path.exists(self.sidecar))
 
     def test_cleanup_leaves_other_sessions_and_events_alone(self):
-        content = json.dumps({"goal": None, "turns": 1, "key": None, "strikes": 0,
-                              "pending": "sess-other"})
+        content = json.dumps({"goal": None, "turns": 1, "pending": "sess-other"})
         for name, kwargs in (("error", {"error": "model error"}), ("idle", {})):
             with self.subTest(name=name):
                 self.write_state(items=USER if name == "idle" else READY)
@@ -1083,8 +1028,7 @@ class AntigravityTest(HostBase):
                 self.assert_stop(self.agy(antigravity_event(self.root, **kwargs)))
                 with open(self.sidecar, encoding="utf-8") as handle:
                     self.assertEqual(handle.read(), content)
-        content = json.dumps({"goal": None, "turns": 1, "key": None, "strikes": 0,
-                              "pending": OWNER})
+        content = json.dumps({"goal": None, "turns": 1, "pending": OWNER})
         for name, owner, kwargs in (
                 ("non-owner", "sess-other", {}),
                 ("other event", OWNER, {"hook_event_name": "SubagentStop"}),

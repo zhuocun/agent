@@ -5,7 +5,6 @@ Run with unittest discovery. All subprocesses and mutations use disposable
 workspaces; filesystem faults are injected without changing host configuration.
 """
 import contextlib
-import hashlib
 import importlib.util
 import io
 import json
@@ -99,42 +98,13 @@ class AdapterRepairTest(hook_tests.HostBase):
         self.assertNotIn("Begin your final message", text)
 
 
-class FingerprintTest(hook_tests.Base):
-    def test_key_is_ordered_id_status_and_log_count(self):
-        self.write_state(items=hook_tests.DOING)
-        self.log(1)
-        self.hook(hook_tests.event(self.root))
-        expected = hashlib.sha256(json.dumps(
-            [[["T1", "doing"]], 1]).encode("utf-8")).hexdigest()
-        self.assertEqual(self.sidecar_data()["key"], expected)
-
-    def test_criterion_dependency_and_same_count_evidence_edits_are_not_progress(self):
-        for change in ("criterion", "dependency", "log evidence"):
-            with self.subTest(change=change):
-                self.write_state(items=hook_tests.DOING + "\n" +
-                                 "- [ready] T2 Later — done when: live; after: NEVER")
-                self.log(1)
-                self.hook(hook_tests.event(self.root))
-                with open(self.state, encoding="utf-8") as handle:
-                    text = handle.read()
-                if change == "criterion":
-                    text = text.replace("tests pass", "all tests pass")
-                elif change == "dependency":
-                    text = text.replace("after: NEVER", "after: UNKNOWN")
-                else:
-                    text = text.replace("T11 closed — tests pass", "T11 closed — review passes")
-                self.write_state(text=text, keep_sidecar=True)
-                out = self.hook(hook_tests.event(self.root, continued=True))
-                self.assertEqual(self.sidecar_data()["strikes"], 1)
-                self.assertIn("no-progress key did not change", self.reason(out))
-
+class ParserTest(hook_tests.Base):
     def test_parser_remains_lenient_with_default_budget(self):
-        header, items, count = hook.parse_state(
+        header, items = hook.parse_state(
             "owner: x\n## Queue\n- [ready] A work; after: NEVER\n"
             "unmatched queue prose\n- [ready] A duplicate\n")
         self.assertEqual(header["budget"], 50)
         self.assertEqual([item["id"] for item in items], ["A", "A"])
-        self.assertEqual(count, 0)
 
 
 class NeutralStdoutTest(hook_tests.HostBase):

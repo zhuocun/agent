@@ -22,7 +22,7 @@ Priority: the user's consent rules and standing authorizations → truthful stat
 
 **Start.** Apply this skill only to a queue you own under pass 2. On start, on resume (continuing the loop in a new session, or after a pause or stop), after compaction, or when this text is incomplete, read this skill through **Self-check**, then establish ownership, check **stop**, keep pass 4's gates and complete **Rebuild** before any queued action or loop status report; if ownership or these instructions cannot be recovered, only inspect evidence.
 
-Read [Scale](references/scale.md) in full before the first iteration in which the state file exceeds 100 lines, the user allows parallel work or a worker does or is to do an item, and again after each compaction while any of these holds.
+Read [Scale](references/scale.md) in full before the first iteration in which the state file exceeds 100 lines, `parallel` is above 1 or you plan to raise it, or a worker does or is to do an item, and again after each compaction while any of these holds.
 
 ## 1. Keep one state file
 
@@ -35,7 +35,6 @@ To start a loop, create the file in this form, with items in priority order and 
     goal: <outcome> — done when: <evidence>
     owner: <session ID>
     stop:
-    async gates: <gate kinds, or none>
     budget: 50
 
     ## Queue
@@ -51,13 +50,13 @@ To start a loop, create the file in this form, with items in priority order and 
 A malformed header or item line can silently end the hook's automatic continuation or hide an item from it.
 
 - **Header:** one line per key, each once, above `## Queue`.
-- **stop:** empty while the loop runs or idles, else a pass 6 reason or a user pause. On an explicit user instruction to pause or stop the loop, record `paused: <the instruction>` and take no queued action until the user explicitly resumes; then clear only that pause and reconcile. Keep a pause the user wrote, and never invent one; ending one turn after an item is not a pause.
-- **async gates:** only the gate kinds the user said may wait in the queue.
+- **stop:** empty while the loop runs or idles, else a pass 6 reason or a user pause. On an explicit user instruction to pause or stop the loop, record `paused: <the instruction>` and take no queued action until the user explicitly resumes; then clear only that pause and reconcile. Keep a pause the user wrote. A turn that another hook's feedback or a separately authorized completion notification continues or starts may prompt **Rebuild**; by itself it clears no `stop:` value and grants no authority for queued work.
 - **done when:** evidence a later iteration can confirm without memory of this session; the goal and each item have one.
 - **budget:** the automatic continuations the hook may grant for this goal; changing `goal` resets the count. A loop stopped by its budget resumes only when the user both raises `budget` and clears `stop: budget`.
 - **Items:** the queue holds only open items, with the statuses shown and the fields this skill names. IDs are unique across Queue and Log and never reused; redo closed work as a new item that names the old ID.
 - **Dependencies:** `after:` lists the IDs an item needs, comma-separated. The item is blocked, and stays `ready` below them, until each has a closure line in Log and no open item in Queue; a blocked `doing` item returns to `ready`. Repair an ID that is neither open nor closed, or a cycle, from evidence, or else handle it under pass 6.
 - **Log:** close an item by moving it to the end of `## Log` as one line in the form shown, with the UTC date and time from the system clock and the ID directly before `closed`; leave its dependants unedited. Keep every Log line for the whole run; dependencies resolve from them.
+- **Cancel:** when the user authorizes cancelling an item, including one a goal change drops, record the decision in its `next:` first, then settle every item whose `after:` names it: point the edge at an authorized replacement, cancel that dependant too when authorized, or else remove the edge and mark the dependant `user` with an `ask:` naming the work it still needs. While the cancelled item's execution is running or its state is unknown, keep the item `doing` or `waiting` with its `writes:` and holder, so its scope stays claimed; ask the holder to stop where authorized and confirm the end under pass 5. Only once it never started, or its execution has ended and you have checked its partial effects, remove its Queue line and append a Log line such as `- <UTC date and time> T1 cancelled — <authorization and reason>`, which closes nothing. A late result of a cancelled item only informs that check; it never closes, reopens or retries the item.
 - **Sidecar:** never edit `.agent-loop.hook.json`; only the hook writes it.
 
 ## 2. Own the loop
@@ -72,27 +71,27 @@ One session owns the state file: only it runs iterations and edits the file, and
 
 Run as many iterations as you can in one turn, ending it only when no item is actionable, a pass 6 stop reason applies, or a waiter needs the turn to end to deliver its event.
 
-1. **Rebuild.** Trust the file over your memory. Read it whole and check it against pass 1 on start, on resume, after compaction and to repair it; on other iterations, read it whole while it has at most 100 lines, and otherwise as Scale directs. Reconcile it with evidence at the authoritative sources: close finished items and record user answers on `user` items.
+1. **Rebuild.** Trust the file over your memory. Read it whole and check it against pass 1 on start, on resume, after compaction and to repair it; on other iterations, read it whole while it has at most 100 lines, and otherwise as Scale directs. Reconcile it with evidence at the authoritative sources: close finished items, record user answers on `user` items, and before acting again on a `doing` item, check its recorded holder, its result and the partial effects of earlier work. Start another attempt only when no earlier attempt can still be running; missing output does not show that one has stopped.
 2. **Pick.** Take the first unblocked `doing` item, else the first unblocked `ready` one, and mark it `doing`. Work on one item at a time unless the wave rules in Scale allow more. Handle a needed gate under pass 4 before acting.
-3. **Check.** Show that a check you write or change rejects work missing the criterion and accepts work meeting it, with a new test failing on the pre-change state or a disposable copy, never by reverting finished work; record both results in the closure evidence. Close an item only on evidence that meets its `done when`: passing tests, a green gate, or a review without open findings by a reviewer other than the item's author (a fresh context counts). Fix every finding of a review round before the next; after three rounds without convergence, treat the dispute as a hard design choice under pass 4.
+3. **Check.** Close an item only on evidence that meets its `done when`: passing tests, a green gate, or a review without open findings by a reviewer other than the item's author (a fresh context counts). Choose the tests and reviews each item needs, and also meet any completion condition that its project or the user sets.
 4. **Attempts.** Count in `tries:`, before the next run, every run of an item's action that fails its check or cannot be integrated, whoever runs it; review rounds do not count. At 3, mark the item `user` with an `ask:` naming the failure and what would unblock it, leave `stop:` unchanged and continue with other items.
 5. **Shared cause.** When a second item shows the same failure, look for a shared cause before the next affected item; fix it within the authorized scope, recheck the items it already affected, and record the fix in the state file. This never authorizes editing the user's rules or this skill. Keep unrelated failures separate.
-6. **Record.** Pass every result, wake and answer through **Check**, then save real changes to statuses, fields, evidence and **Log** before further scheduling or status reports. Never edit the file only to satisfy the hook.
+6. **Record.** Pass every result, wake and answer through **Check**, then save real changes to statuses, fields, evidence and **Log** before further scheduling or status reports. Save them as one snapshot: apply them to the latest whole file, finding each item line by its ID, and replace the file atomically by renaming a temporary file written in the same directory; if the file changed after you read it, rebuild from the new version first.
 
 ## 4. Handle gates
 
-A gate is an action outside the user's standing authorizations that needs their consent under their instructions or the project's rules, an acceptance the user reserves, or a hard design choice.
+A gate is an action outside the user's standing authorizations that needs their consent under their instructions or the project's rules, an acceptance the user reserves, or a design choice that would change the outcome the user authorized. Make every other technical choice yourself, consulting an available advisor, such as a stronger model, where that helps.
 
-- **Async:** for a gate kind listed in `async gates`, mark the item `user` with an `ask:` that states the exact action and the options, name it in the turn's final message, and continue with other items. For a hard design choice, first consult an available advisor, such as a stronger model, and queue the choice, with the advice, only if it is still open.
-- **Sync:** for every other gate, mark the item `user` with an `ask:` that lists every question you ask the user at this gate, set `stop: gate: <question>`, and end the turn with those questions.
-- **Answer:** only the user's answer opens a gate, never a CI result, an agent's review or approval, or the host's permission mode. Record it on the item, set the item `ready`, and clear `stop` if it named this gate.
+- **Async:** when a gate blocks only its item and **Sync** does not apply, mark the item `user` with an `ask:` that states the exact action and the options, name it in the turn's final message, and continue with other authorized items.
+- **Sync:** when a gate blocks the goal, the user asked you to wait at it, or the state file has an `async gates:` line, which lists the gate kinds the user let wait in the queue, that does not list its kind, mark the item `user` with an `ask:` that lists every question you ask the user at this gate, set `stop: gate: <question>`, and end the turn with those questions.
+- **Answer:** only the user's answer opens a gate. Record it on the item, set the item `ready`, and clear `stop` if it named this gate.
 
 ## 5. Wait for events
 
 When an item needs an external result:
 
 - **Waiter:** use a completion route that Host setup supports for this session, host and mode, within its scope and lifetime and with any blocking collection it requires; without one, wait within the turn by a blocking call, or else record that collection needs the next user message or an explicit resume. Record the waiter's lifetime and collection route; where a host stops background commands after a fixed time, collect or re-arm before that limit, within the user's authorization.
-- **Scheduling boundary:** never create cron jobs or scheduled or periodic agent runs to execute the queue. A separately authorized completion notification may prompt reconciliation but grants no further authority.
+- **Scheduling boundary:** never create cron jobs or scheduled or periodic agent runs to execute the queue.
 - **Record:** mark the item `waiting` with a `wake:` and a `check:` that any later iteration can run to confirm the event without the waiter, and keep its `done when`.
 - **Wake:** run a waiting item's `check` only on its wake, on resume or interruption, and when no item is ready; once its event has happened, set the item `doing` and continue from that result without redoing it, and on a failed check handle the wait under **Waiter** and continue other work. A duplicate wake changes nothing.
 - **Idle:** when only waiting, user or blocked items remain, keep `stop:` empty unless a stop condition applies, and record and disclose any wait that no waiter covers. Run no model polling loop; a blocking command that checks for its event is not one.
@@ -105,27 +104,20 @@ Honor explicit pause and stop instructions under **stop**. Otherwise set `stop:`
 - **Queue empty:** confirm the goal's `done when` with evidence, then set `stop: done`; if it is not met, add the missing items instead.
 - **Budget used up:** when the hook says this is the last automatic turn the budget allows, checkpoint the current item, record state, and set `stop: budget`.
 - **Synchronous gate:** under **Sync**.
-- **Unresolvable blocker:** after trying alternatives and consulting an available advisor, set `stop: blocked: <reason; what would unblock it>`. A blocker of one item instead marks that item `user` while others continue.
+- **Unresolvable blocker:** after trying alternatives, and consulting an available advisor where that could help, set `stop: blocked: <reason; what would unblock it>`. A blocker of one item instead marks that item `user` while others continue.
 
 **Continuation cap:** when a host reports that no more automatic turns are available, checkpoint state and report; after a silent cap no turn follows, so rely on state already recorded. The user's next message continues the loop under its recorded stop conditions.
 
 ## 7. Keep progress visible
 
-Put this status line in each turn's final message, first unless an applicable instruction fixes that message's fields or order; then put the loop facts in its permitted fields.
+Give the loop facts in each turn's final message: the current item, or idle or the stop reason, and how many items are `ready`, `waiting` and `user`. Put them first unless an applicable instruction fixes that message's fields or order; then put them in its permitted fields.
 
-    Loop · now: <ID title, idle or stop reason> · <n> ready · <n> waiting · <n> need you · turn <t>/<budget>
-
-- **Count:** copy `turn <t>/<budget>` unchanged only from the latest actual `[agent-loop]` hook message for this loop in the current context, which a summary or an earlier status line is not, and otherwise omit it; never increment or extrapolate it.
-- **Report:** when the loop goes idle or stops, or the hook announces a last automatic turn, follow the status line with the items closed since the user's last message and their evidence (when more than ten, instead their count, first and last IDs, and the state file's path), each open `ask:`, each waiting item and its wake, and the next item. The user's last message is the last one a human wrote, not hook feedback, a task notification or a tool result.
+- **Count:** add `turn <t>/<budget>` only as copied unchanged from the latest actual `[agent-loop]` hook message for this loop in the current context, which a summary or an earlier report is not; never increment or extrapolate it.
+- **Report:** when the loop goes idle or stops, or the hook announces a last automatic turn, add the items closed since the user's last message and their evidence (when more than ten, instead their count, first and last IDs, and the state file's path), each open `ask:`, each waiting item and its wake, and the next item. The user's last message is the last one a human wrote, not hook feedback, a task notification or a tool result.
 
 ## Self-check
 
-- **Start:** every step of **Start** done before acting?
-- **Scale:** when due, read it in full and followed it?
-- **Pass 1:** file meets every rule of pass 1?
-- **Pass 2:** **Host**, **Owner ID** and **One controller** followed?
-- **Pass 3:** each iteration followed **Rebuild** to **Record**, to an allowed turn end?
-- **Pass 4:** **Async**, **Sync** and **Answer** followed?
-- **Pass 5:** **Waiter** to **Session end** followed?
-- **Pass 6:** only listed stops or **stop**, and **Continuation cap**?
-- **Pass 7:** status line placed per pass 7, meeting **Count** and **Report**?
+- **Start:** every step of **Start** done before acting, and Scale read in full and followed when due?
+- **State:** the file meets pass 1, and every change was saved under **Record** before further scheduling or reports?
+- **Turns:** each turn followed passes 2 to 5 and ended only as pass 3 allows, with `stop:` set only under pass 6 or **stop**, and neither cleared nor queued work authorized by another hook's feedback or a completion notification alone?
+- **Report:** each final message carries pass 7's loop facts, meeting **Count** and **Report**?

@@ -500,13 +500,11 @@ for (const vp of VIEWPORTS) {
           ready: () =>
             page.locator('[role="menu"]:visible, [role="dialog"]:visible').first().waitFor({ state: "visible" }),
         });
-        const adv = page.locator('[data-testid="picker-advanced"]:visible').first();
-        if (await adv.count()) {
-          await press(adv);
-          await a.capture("model-picker-advanced", {
-            ready: () => page.locator('[data-testid="web-search-toggle"]:visible').first().waitFor(),
-          });
-        }
+        await page.keyboard.press("Escape");
+        await press(page.locator('[data-testid="composer-tools"]:visible').first());
+        await a.capture("tools-menu", {
+          ready: () => page.locator('[data-testid="web-search-toggle"]:visible').first().waitFor(),
+        });
       });
 
       // 3. Command palette ----------------------------------------------------
@@ -866,8 +864,7 @@ for (const vp of VIEWPORTS) {
       await a.attempt("web-search", async () => {
         await page.goto("/");
         await waitForShell(page);
-        await press(page.locator('[data-testid="model-mode-trigger"]:visible').first());
-        await press(page.locator('[data-testid="picker-advanced"]:visible').first());
+        await press(page.locator('[data-testid="composer-tools"]:visible').first());
         await press(page.locator('[data-testid="web-search-toggle"]:visible').first());
         await dismissAll(page);
         await sendAndSettle(page, "What is the latest on Playwright releases?");
@@ -884,7 +881,7 @@ for (const vp of VIEWPORTS) {
       await a.attempt("deep-research-plan", async () => {
         await page.goto("/");
         await waitForShell(page);
-        await press(page.locator('[data-testid="model-mode-trigger"]:visible').first());
+        await press(page.locator('[data-testid="composer-tools"]:visible').first());
         await press(page.locator('[data-testid="deep-research-toggle"]:visible').first());
         await dismissAll(page);
         await sendAndSettle(page, "DEEP_RESEARCH: alpha topic | beta topic", "awaiting_approval");

@@ -16,13 +16,13 @@
 
 import { expect, test, type Page } from "./coverage-fixture";
 
-import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
+import { BE_URL, toolsTrigger, waitForBootstrap } from "./helpers";
 
-// Flip the Deep Research toggle ON via the model-mode picker (minimal copy of
+// Flip the Deep Research toggle ON via the Tools menu (minimal copy of
 // agentic.spec.ts's helper — the toggle is a Base UI menu checkbox item, so its
 // on-state is aria-checked, not aria-pressed).
 async function enableDeepResearch(page: Page): Promise<void> {
-  await modelModeTrigger(page).click();
+  await toolsTrigger(page).click();
   const toggle = page.getByTestId("deep-research-toggle");
   await expect(toggle).toBeVisible({ timeout: 5_000 });
   await toggle.click();
@@ -31,8 +31,7 @@ async function enableDeepResearch(page: Page): Promise<void> {
 }
 
 async function enableWebSearch(page: Page): Promise<void> {
-  await modelModeTrigger(page).click();
-  await page.getByTestId("picker-advanced").click();
+  await toolsTrigger(page).click();
   const toggle = page.getByTestId("web-search-toggle");
   await expect(toggle).toBeVisible({ timeout: 5_000 });
   await toggle.click();

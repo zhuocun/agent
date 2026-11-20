@@ -1,14 +1,14 @@
 // Touch and pointer target floors (UI-TOUCH-1 / -2 / -5) on the controls the
 // UI audit found undersized: inline citation markers, the reasoning and
-// sources disclosure toggles, and the desktop-rail "Advanced search" and
-// "Select" affordances a touch tablet also receives.
+// sources disclosure toggles, and the account-menu "Advanced search" and
+// "Select" items a touch tablet also receives.
 //
 // The hit region is measured the way UI-TOUCH-1 defines it: the element's box
 // grown by any absolutely positioned ::before / ::after hit-slop.
 
 import { expect, test, type Locator, type Page } from "./coverage-fixture";
 
-import { modelModeTrigger, waitForBootstrap } from "./helpers";
+import { toolsTrigger, waitForBootstrap } from "./helpers";
 
 async function hitRegion(locator: Locator): Promise<{ w: number; h: number }> {
   return locator.evaluate((el) => {
@@ -50,8 +50,7 @@ async function expectInlineCitationFloor(locator: Locator): Promise<void> {
 }
 
 async function sendWebSearchTurn(page: Page): Promise<Locator> {
-  await modelModeTrigger(page).click();
-  await page.getByTestId("picker-advanced").click();
+  await toolsTrigger(page).click();
   const toggle = page.getByTestId("web-search-toggle");
   await expect(toggle).toBeVisible({ timeout: 5_000 });
   await toggle.click();
@@ -102,6 +101,7 @@ test.describe("touch tablet target floor", () => {
       assistant.getByTestId("sources-panel").getByRole("button").first(),
       44,
     );
+    await page.getByRole("button", { name: "Account menu" }).click();
     await expectFloor(page.getByTestId("sidebar-advanced-search"), 44);
     await expectFloor(page.getByTestId("sidebar-select-toggle"), 44);
   });

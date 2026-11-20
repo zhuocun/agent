@@ -23,17 +23,16 @@ import { expect, test, type Locator, type Page } from "./coverage-fixture";
 
 import {
   BE_URL,
-  modelModeTrigger,
+  toolsTrigger,
   reloadIntoConversation,
   snapshotAgenticTurn,
   waitForBootstrap,
 } from "./helpers";
 
-// Flip the Deep Research toggle ON via the model-mode picker (desktop
-// dropdown variant — the chromium project). It sits in the picker's main
-// toggle group, peer to Web search, so no Advanced expansion is needed.
+// Flip the Deep Research toggle ON via the Tools menu (desktop dropdown —
+// the chromium project). It sits with Web search, not in the model list.
 async function enableDeepResearch(page: Page): Promise<void> {
-  await modelModeTrigger(page).click();
+  await toolsTrigger(page).click();
   const toggle = page.getByTestId("deep-research-toggle");
   await expect(toggle).toBeVisible({ timeout: 5_000 });
   await toggle.click();
@@ -43,8 +42,7 @@ async function enableDeepResearch(page: Page): Promise<void> {
 }
 
 async function enableWebSearch(page: Page): Promise<void> {
-  await modelModeTrigger(page).click();
-  await page.getByTestId("picker-advanced").click();
+  await toolsTrigger(page).click();
   const toggle = page.getByTestId("web-search-toggle");
   await expect(toggle).toBeVisible({ timeout: 5_000 });
   await toggle.click();
@@ -140,9 +138,9 @@ test.describe("agentic mode (deep research)", () => {
     await page.goto("/");
     await waitForBootstrap(page);
 
-    await modelModeTrigger(page).click();
-    // Control: the picker is open (the peer Web search toggle renders) but the
-    // Deep Research toggle is absent.
+    await toolsTrigger(page).click();
+    // Control: the Tools menu is open (the peer Web search toggle renders) but
+    // the Deep Research toggle is absent.
     await expect(page.getByTestId("web-search-toggle")).toBeVisible();
     await expect(page.getByTestId("deep-research-toggle")).toHaveCount(0);
   });

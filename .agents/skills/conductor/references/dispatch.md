@@ -5,6 +5,7 @@ Read this file in full before the first dispatch in a session and again after a 
 - [Subagent sources](#subagent-sources)
   - [Claude Code routes](#claude-code-routes)
   - [Codex routes](#codex-routes)
+  - [Antigravity routes](#antigravity-routes)
 - [Workspaces for concurrent writers](#workspaces-for-concurrent-writers)
 - [Mapping to dispatch fields](#mapping-to-dispatch-fields)
 - [Tiers and model IDs](#tiers-and-model-ids)
@@ -16,7 +17,7 @@ Read this file in full before the first dispatch in a session and again after a 
 
 ## Subagent sources
 
-Four sources can run a subagent when the host provides a supported in-product mechanism or headless CLI. **Task types**, **Fallbacks** and **Effort limits** decide each dispatch's model family and effort; this section decides which source carries it.
+Five sources can run a subagent when the host provides a supported in-product mechanism or headless CLI. **Task types**, **Fallbacks** and **Effort limits** decide each dispatch's model family and effort; this section decides which source carries it.
 
 | Source | In-product mechanism | Headless CLI |
 |---|---|---|
@@ -24,10 +25,11 @@ Four sources can run a subagent when the host provides a supported in-product me
 | Codex | native subagents with exposed `model` and `reasoning_effort`, or TOML custom agents with `model` and `model_reasoning_effort`; inspect launcher/fork restrictions | `codex exec` |
 | Cursor | Cursor's Task-tool subagents (frontmatter `model`; effort and speed as bracket parameters, e.g. `<model-id>[effort=high,fast=false]`) | `agent -p` (legacy binary name `cursor-agent`) |
 | Devin | Devin's subagents (custom-subagent frontmatter `model`; effort is encoded in the model ID) | `devin -p` |
+| Antigravity | `swarm` (`add` with `model` from `models`, where effort is encoded in the model entry), or `invoke_subagent` / `run_workflow` (`agent()`) with `inherit` only when the parent session already runs the role's exact assigned model, effort and speed (their other tier tokens cannot pin a concrete model or effort) | `agy -p` |
 
 Take the first available source in the family's order:
 
-- **Claude-family models**: Claude Code → Cursor → Devin.
+- **Claude-family models**: Claude Code → Cursor → Devin → Antigravity.
 - **GPT-family models**: Codex → Devin.
 
 A mode-only route lets the caller pick a product mode that bundles model, effort and speed, but not a model or an effort; Devin child sessions are one. It is never a source's in-product mechanism, and it is the last resort: it ranks after every available route that carries the model per agent, the row's Fallback family included, and **Fallbacks** treats it as a source that offers no model of either family.
@@ -49,6 +51,10 @@ Check that the updated definition is discoverable before dispatch. Claude Code w
 ### Codex routes
 
 On Codex, inspect the current host's launcher schema and configuration format. Use exposed model and effort parameters (for example `model` and `reasoning_effort`), or supported TOML custom agents with `model` and `model_reasoning_effort`. Resolve custom-agent discovery against the active user configuration root and project scope, and include that version's required fields. Keep generated definitions in a writable, loaded user scope; create or alter project definitions only when that repository change is already authorized. Otherwise use another available route. Hosts supporting the current standalone custom-agent discovery format require `name`, `description` and `developer_instructions` in each file; do not impose that manifest on a host using a different TOML role-config format. Fork controls vary by host: use `fork_turns: "none"` or a positive history count only when the schema exposes those forms and requires them for overrides. That requirement exists only where the host specifies that full-history forks inherit the parent's settings and reject overrides, so do not translate it into an unsupported argument on another host.
+
+### Antigravity routes
+
+On Antigravity, when `swarm` is exposed and authorized, call `swarm` with `action: "models"` to inspect the available picker models and `action: "add"` with an explicit `model` entry, which encodes the model's effort level. `invoke_subagent` (`Model`), custom-agent files (`model`), and `run_workflow` (`agent(..., model=...)`) accept only coarse tier strings (such as `inherit`, `flash_lite`, `flash`, `pro`), not concrete model IDs or effort tokens; `define_subagent` exposes no model parameter. Use `inherit` only when the parent session already runs the role's exact assigned model, effort and speed, never a coarse tier token to approximate an assigned model. When no in-product route can carry the assignment, use `agy -p`. For a leaf delegate, prohibit further delegation (`swarm`, native subagent and workflow tools, and CLIs) in the brief, and also disable delegation tools where supported (`EnableSubagentTools: false` on `define_subagent`, or an explicit verified `tools` allowlist omitting delegation tools on custom agents). Keep generated custom-agent definitions in writable user scope (`~/.gemini/config/agents/`) and create or alter project `.agents/agents/` definitions only when that repository change is already authorized.
 
 ## Workspaces for concurrent writers
 
@@ -116,7 +122,9 @@ First choice is the family and effort to dispatch, Fallback the family and effor
 
   On Codex, use native dispatch only when an explicit request setting, the host request contract or verified inheritance establishes the role's requested tier; set the exposed model and effort parameters and inspect fork restrictions. Verified inheritance that matches the assignment can carry the tier without a separate tier selector, but capability advertising alone is insufficient: a model list advertising Ultrafast and a launcher exposing only model and effort do not establish an Ultrafast request. Verify the current host rather than assuming root-tier inheritance or overwrite behavior. Otherwise use `codex exec` with the supported tier set explicitly. A role assigned Standard needs its own Standard request when native dispatch would select Fast or Ultrafast.
 
-  On Cursor and Devin, explicitly select each role's verified speed variant, never Cursor's `inherit` or undocumented `model: fast` form, and never Devin's `subagent_general`, which inherits the parent model and does not independently establish the role's speed. Cursor documents `<model-id>[fast=false]` and `<model-id>[]` for standard subagent frontmatter, and a parent can name a model at launch; `<model-id>[fast=true]` follows the SDK's model parameters but is unconfirmed in subagent frontmatter. Inspect each role's task card, because a saved, default or parent-selected Fast variant can differ from the intended setting. Devin custom-subagent `model` takes the same UID as `--model`, and a skill that runs in a subagent can set `model:` in its frontmatter to override the profile's model. Give each role a custom definition naming its exact variant. Devin does not document a Fast form for custom-subagent `model`, so inspect run evidence to confirm the role ran its intended variant. Neither a Fast control nor an invented `-ultrafast` suffix establishes Ultrafast support. Read `cli-dispatch.md` for each source's CLI settings and checks.
+  On Cursor and Devin, explicitly select each role's verified speed variant, never Cursor's `inherit` or undocumented `model: fast` form, and never Devin's `subagent_general`, which inherits the parent model and does not independently establish the role's speed. Cursor documents `<model-id>[fast=false]` and `<model-id>[]` for standard subagent frontmatter, and a parent can name a model at launch; `<model-id>[fast=true]` follows the SDK's model parameters but is unconfirmed in subagent frontmatter. Inspect each role's task card, because a saved, default or parent-selected Fast variant can differ from the intended setting. Devin custom-subagent `model` takes the same UID as `--model`, and a skill that runs in a subagent can set `model:` in its frontmatter to override the profile's model. Give each role a custom definition naming its exact variant. Devin does not document a Fast form for custom-subagent `model`, so inspect run evidence to confirm the role ran its intended variant. Neither a Fast control nor an invented `-ultrafast` suffix establishes Ultrafast support.
+
+  On Antigravity, neither the in-product mechanisms nor `agy -p` exposes a Fast or Ultrafast serving control; treat Fast and Ultrafast as unavailable there and run Standard per **Matching and availability**. Read `cli-dispatch.md` for each source's CLI settings and checks.
 
 ## Reporting
 

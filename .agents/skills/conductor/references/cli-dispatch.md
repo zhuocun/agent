@@ -28,6 +28,7 @@ assignment into a different shell unchanged.
 - [Codex: `codex exec`](#codex-codex-exec)
 - [Cursor: `agent -p`](#cursor-agent--p)
 - [Devin: `devin -p`](#devin-devin--p)
+- [Antigravity: `agy -p`](#antigravity-agy--p)
 
 ## Rules for every CLI
 
@@ -109,7 +110,10 @@ assignment into a different shell unchanged.
   rework is possible).
   Put exec-level options such as `--sandbox` before `resume` when its subcommand
   lacks them. Cursor's supported `--resume <chatId>` uses output `session_id`;
-  Devin's supported resume form is `-r <SESSION_ID>`. Check print-mode resume
+  Devin's supported resume form is `-r <SESSION_ID>`; Antigravity uses
+  `--conversation <conversation_id>` from JSON `.conversation_id` (or
+  `stream-json` `init` `.conversation_id` / `result` `.result.conversation_id`).
+  Check print-mode resume
   support on the installed build: try once, then dispatch fresh if it errors or
   ignores print mode. If any resume fails or no ID was captured, provide the
   original brief, current artifact and issues to a fresh worker; never send the
@@ -423,3 +427,96 @@ a new account or build.
   no documented serving receipt.
   `/session-stats` reports billed-turn models in interactive/ACP hosts, not a
   documented print-mode receipt.
+
+## Antigravity: `agy -p`
+
+Check the [CLI reference](https://antigravity.google/docs/cli/reference),
+[headless](https://antigravity.google/docs/cli/headless),
+[models](https://antigravity.google/docs/models),
+[permissions](https://antigravity.google/docs/permissions) and
+[sandbox](https://antigravity.google/docs/sandbox) references against the
+installed build. CLI settings live at `~/.gemini/antigravity-cli/settings.json`
+(with no documented environment variable relocating that directory), global
+customizations at `~/.gemini/config/`, and project customizations at `.agents/`;
+`--settings` applies a session-only JSON object (inline or file path) without
+saving it.
+
+- **Invocation**: `agy --model <model-id> --output-format json
+  --disable-slash-commands -p "<prompt>" < /dev/null`. `agy` installs to
+  `~/.local/bin/agy`, which minimal non-login shells may omit from `PATH`. `-p`
+  requires a non-empty prompt argument and ignores stdin when a prompt is given;
+  passing `-p` without a prompt (including with piped stdin) exits 2, and
+  `-p ""` exits 1. For a long brief, omit `-p` and pipe stdin until EOF
+  (`agy --model <model-id> --output-format json --disable-slash-commands < brief.md`),
+  or use `--input-format stream-json --output-format stream-json`. Pass
+  `--disable-slash-commands` so a brief starting with `/` does not trigger slash
+  command or skill expansion. `--print-timeout` defaults to `0s` (no limit).
+- **Model**: query the live catalog with `agy models` or
+  `agy --output-format json models` (global `--output-format` must precede the
+  `models` subcommand) and select the newest required model matching **Tiers.**
+  in `dispatch.md`. Always pass `--model` explicitly so saved `settings.json`
+  defaults do not apply; an unknown model exits 1 rather than falling back.
+  Claude top-tier models require an eligible OAuth or ADC account and are absent
+  under `GEMINI_API_KEY` (`modelProvider: "gemini"`), and OpenAI's top-tier line
+  is not offered. Do not use `Orchestrator` multi-model entries or any tier
+  **Tiers.** in `dispatch.md` forbids.
+- **Effort**: `agy` accepts a suffixed catalog slug (`--model <model>-<level>`),
+  a base slug with `--effort <low|medium|high|xhigh|max>`, or matching slug and
+  `--effort`; a base slug without `--effort` uses the model's default level, so
+  always specify effort explicitly. A conflicting suffix and `--effort`, or an
+  effort level the selected model does not publish (check `agy models` — some
+  models cap below `xhigh`/`max`), exits 1 at startup. `--effort` applies to the
+  current session only and is never saved.
+- **Auth**: cached OAuth credentials in the OS keyring are the default; a
+  headless `-p` run with no cached credentials and no controlling TTY fails fast
+  with `authentication required`. Gemini API key mode requires both
+  `"modelProvider": "gemini"` (in settings or `--settings`) and `GEMINI_API_KEY`
+  (and does not expose Claude models); Google Cloud ADC uses `AGY_ADC_AUTH=true`.
+  Zero-quota `agy --output-format json models` or
+  `agy -p "/usage" --output-format json` checks catalog and account access
+  without spending tokens under OAuth/ADC (under `GEMINI_API_KEY`, `/usage`
+  exits 2 and `models` checks only that the key is non-empty, not valid).
+- **Permissions**: print mode inherits `~/.gemini/antigravity-cli/settings.json`
+  (and defaults `agentMode` to `auto` where available when unset, while saved
+  `toolPermission: "always-proceed"` or `"strict"` overrides `--mode auto` and
+  governs commands under `--mode accept-edits`), and exposes no dedicated
+  `--read-only` flag; `--mode plan` is a prompt-level prefix and is overridden
+  by `always-proceed` or `--dangerously-skip-permissions`. Use session-only
+  `--settings '<json>'` for per-run policy (omitted keys, including
+  `permissions.allow`, inherit `settings.json`): for strictly read-only work,
+  pass
+  `--settings '{"agentMode":"","toolPermission":"request-review","permissions":{"allow":[],"deny":["write_file(*)"]}}'`;
+  for reviewers and verifiers running checks in a disposable worktree, keep
+  `"agentMode":""` and `"deny":["write_file(*)"]` and either keep
+  `"toolPermission":"request-review"` with scoped `permissions.allow`
+  `command(...)` rules (optionally with `--sandbox`) or pair `--sandbox` with
+  `"toolPermission":"proceed-in-sandbox"` and `"allow":[]` where the sandbox is
+  available; for edits, pair `--mode accept-edits` with `--settings` setting
+  `toolPermission` (`"proceed-in-sandbox"` with `--sandbox`, or
+  `"request-review"` with scoped `permissions.allow`), or use `--mode auto` (which enables the sandbox
+  automatically and requires overriding any saved `always-proceed` or `strict`
+  `toolPermission`); reserve `--dangerously-skip-permissions` for isolated
+  runners. Precedence is `Deny > Ask > Allow`. Check OS sandbox prerequisites
+  (Linux user namespaces, macOS `sandbox-exec`, Windows AppContainer; where the
+  sandbox is unavailable, `--sandbox` has no effect, `proceed-in-sandbox`
+  behaves like `request-review`, and `auto` falls back to `default`; `auto` is
+  also unavailable on business/enterprise accounts).
+  Prohibit further delegation (`swarm`, `invoke_subagent`, `define_subagent`,
+  `run_workflow`, and CLIs) in every leaf brief.
+- **Speed selection**: Antigravity exposes no Fast or Ultrafast flag, setting or
+  model variant (`runningLightSpeed` controls TUI progress animation only, and
+  the legacy `/fast` mode command was removed). Treat Fast and Ultrafast as
+  unavailable and run Standard per **Speed modes** in `dispatch.md`.
+- **Output and verification**: `text` prints the final response to stdout;
+  `json` emits one JSON envelope with `.conversation_id`, `.status`, `.response`,
+  `.error`, `.usage` and (on early termination) `.finished_reason`;
+  `stream-json` emits NDJSON `init`, `step_update` and terminal `result` events
+  (`init` records `cwd`, `tools`, `permission_mode`, and `model` when
+  overridden). Check exit status (`0` success, `1` startup/config/validation
+  error, `2` CLI usage error, `3` mid-turn API error or `--print-timeout`
+  expiration with `AGY_ERROR` on stderr) and JSON `.status` / `.finished_reason`,
+  because soft-denied tools can still exit 0. `--json-schema` requires an
+  object-root schema (`"type": "object"`). Under default `--print-timeout 0s`,
+  print mode waits for non-daemon background tasks before exiting. Local `init`
+  and catalog fields record outgoing selection, not independent backend serving
+  identity.

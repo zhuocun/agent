@@ -10,7 +10,7 @@ one turn-end event as JSON on stdin and prints one JSON object on stdout. It
 always exits 0. It asks the host to continue only when the event comes from
 the main session that owns the state file, the loop has no stop reason, an
 item is actionable (or a waiting item has no waiter running), and the budget
-and progress guards pass. An item is actionable when it is doing or ready and
+allows it. An item is actionable when it is doing or ready and
 every ID in its after: list has a closure line in Log and is not open in
 Queue. With --host devin, a SessionStart event tells the session its ID
 instead. After successful argument parsing, Antigravity no-continuation output
@@ -41,7 +41,6 @@ DEFAULT_BUDGET = 50
 DEFAULT_PARALLEL = 1
 DEFAULT_LIMIT = 5
 TRIES_LIMIT = 3
-NO_PROGRESS_LIMIT = 3
 STATUSES = ("ready", "doing", "waiting", "user")
 OPEN_WORK = ("doing", "ready")
 ITEM = re.compile(r"^[-*]\s+\[([^\]]*)\]\s+(\S+)(.*)$")
@@ -246,18 +245,16 @@ def parse_header(state, number, line):
 
 
 def parse_log(state, line):
-    """Count one Log entry and record the ID its closure line names.
+    """Record the ID a Log closure line names.
 
     Only the text before the first dash that opens the evidence can name the
     closed ID, so evidence that mentions another closure names nothing.
     """
     if not LOG_LINE.match(line):
         return
-    state["log_lines"] += 1
     match = CLOSURE.search(EVIDENCE_DASH.split(line.lstrip()[1:], 1)[0])
     if match:
         state["closed"].add(match.group(1))
-        state["closures"] += 1
 
 
 def whole_header(state, key, default, minimum):
@@ -274,12 +271,12 @@ def whole_header(state, key, default, minimum):
 
 
 def read_state(text, limit=DEFAULT_LIMIT):
-    """Tolerant parse: header, items, closed IDs, log count and the problems found.
+    """Tolerant parse: header, items, closed IDs and the problems found.
 
     limit caps the IDs listed inside one problem.
     """
-    state = {"header": {}, "header_lines": {}, "items": [], "closed": set(), "log_lines": 0,
-             "closures": 0, "problems": [], "limit": limit}
+    state = {"header": {}, "header_lines": {}, "items": [], "closed": set(),
+             "problems": [], "limit": limit}
     section, has_queue = None, False
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
@@ -416,13 +413,13 @@ def capped(values, limit):
 
 
 def parse_state(text):
-    """Hook view: headers, queue items and log count; raise on any fatal problem."""
+    """Hook view: headers and queue items; raise on any fatal problem."""
     state = read_state(text)
     fatal = [entry["reason"] for entry in state["problems"] if entry["fatal"]]
     if fatal:
         raise ValueError(fatal[0])
     header = dict(state["header"], budget=state["budget"], parallel=state["parallel"])
-    return header, state["items"], state["log_lines"]
+    return header, state["items"]
 
 
 def digest(value):
@@ -437,7 +434,7 @@ def counter(value):
 
 def fresh_sidecar(goal, pending):
     """Zero counters for a goal; pending is included only when the host tracks it."""
-    side = {"goal": goal, "turns": 0, "key": None, "strikes": 0}
+    side = {"goal": goal, "turns": 0}
     if pending:
         side["pending"] = None
     return side
@@ -454,12 +451,7 @@ def load_sidecar(path, pending):
         data = json.load(handle)
     if not isinstance(data, dict):
         raise ValueError("sidecar is not an object")
-    side = {
-        "goal": data.get("goal"),
-        "turns": counter(data.get("turns")),
-        "key": data.get("key"),
-        "strikes": counter(data.get("strikes")),
-    }
+    side = {"goal": data.get("goal"), "turns": counter(data.get("turns"))}
     if pending:
         side["pending"] = data.get("pending")
         if side["pending"] is not None and not isinstance(side["pending"], str):
@@ -500,7 +492,7 @@ def decide(event, state_arg, host="claude"):
         return None
     path = os.path.abspath(path)
     with open(path, encoding="utf-8") as handle:
-        header, items, log_lines = parse_state(handle.read())
+        header, items = parse_state(handle.read())
 
     session = end["session"]
     if header.get("owner", "") != session:
@@ -539,15 +531,6 @@ def decide(event, state_arg, host="claude"):
     if side["turns"] >= budget:
         return clear_pending(sidecar_path, session) if tracks_pending else None
 
-    key = digest(json.dumps(
-        [[[item["id"], item["status"]] for item in items], log_lines]))
-    side["strikes"] = side["strikes"] + 1 if hook_turn and key == side["key"] else 0
-    side["key"] = key
-    if side["strikes"] >= NO_PROGRESS_LIMIT:
-        if tracks_pending:
-            side["pending"] = None
-        write_sidecar(sidecar_path, side)
-        return None
     side["turns"] += 1
     if tracks_pending:
         side["pending"] = session
@@ -580,14 +563,6 @@ def decide(event, state_arg, host="claude"):
             "next items and any problems."
             % (TAG, path, turn, budget, len(actionable), waiting, user, pick["id"],
                os.path.abspath(__file__), path)
-        )
-    if side["strikes"]:
-        remaining = NO_PROGRESS_LIMIT - side["strikes"]
-        message += (
-            " The hook's no-progress key did not change during the last automatic "
-            "turn. Record evidenced progress or the blocker; %s with the same key "
-            "end%s automatic continuation."
-            % (("another turn", "s") if remaining == 1 else ("%d more turns" % remaining, ""))
         )
     if turn == budget:
         message += (
@@ -730,7 +705,8 @@ def header_lines(path, state):
     """Section 1: the path and the header values the loop runs on."""
     header = state["header"]
     lines = ["state: %s" % path]
-    for key in ("goal", "owner", "stop", "async gates"):
+    keys = ("goal", "owner", "stop") + (("async gates",) if "async gates" in header else ())
+    for key in keys:
         lines.append("%s: %s" % (key, header.get(key) or "(none)"))
     for key, default in (("budget", DEFAULT_BUDGET), ("parallel", DEFAULT_PARALLEL)):
         value = header.get(key)
@@ -748,7 +724,7 @@ def count_line(state):
     """Section 2: counts by status, with ready split by its dependencies."""
     counts = [len(matching(state, "doing")), len(matching(state, "ready", False)),
               len(matching(state, "ready", True)), len(matching(state, "waiting")),
-              len(matching(state, "user")), state["closures"]]
+              len(matching(state, "user")), len(state["closed"])]
     return ("counts: %d doing, %d ready, %d ready but blocked, %d waiting, %d need you, "
             "%d closed" % tuple(counts))
 

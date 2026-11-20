@@ -85,6 +85,18 @@ class ReportTest(StatusBase):
         self.assertEqual(lines[-1], "problems: none")
         self.assertNotIn("wave:", out)
 
+    def test_async_gates_line_shown_only_when_present(self):
+        text = HEADER.format(extra="", items=ready("T1"), log="")
+        for line, shown in (("async gates: design choice\n", "async gates: design choice"),
+                            ("async gates:\n", "async gates: (none)"), ("", None)):
+            with self.subTest(line=line):
+                self.write_state(text=text.replace("async gates: design choice\n", line))
+                header = self.report().splitlines()[:7]
+                if shown:
+                    self.assertEqual(header[4], shown)
+                else:
+                    self.assertFalse(any(row.startswith("async gates") for row in header))
+
     def test_found_by_walking_up_and_by_flag(self):
         self.write([ready("T1")])
         sub = os.path.join(self.root, "src", "pkg")
@@ -446,6 +458,29 @@ class NumberAndIdFormTest(StatusBase):
     def test_closure_line_with_hyphen_dash_still_counts(self):
         self.write([ready("T2", "; after: T1")], log="- 2026-11-01 10:00 T1 closed - tests pass\n")
         self.assertIn("1 closed", self.report())
+
+    def test_closed_count_is_the_number_of_closed_ids(self):
+        self.write([ready("T3")], log=closure("T1") + closure("T1") + closure("T2"))
+        self.assertIn("2 closed", self.report())
+
+    def test_cancellation_log_line_closes_nothing(self):
+        cancelled = "- 2026-11-01T10:00Z T1 cancelled — the user dropped the export\n"
+        self.write([ready("T2", "; after: T1")], log=cancelled)
+        out = self.report()
+        self.assertIn("0 closed", out)
+        self.assertIn("T2 after: T1: neither an open item nor closed in Log", out)
+        self.write(["- [user] T2 Work — done when: tests pass; ask: T1 was cancelled; "
+                    "what replaces it?"], log=cancelled)
+        out = self.report()
+        self.assertIn("0 closed", out)
+        self.assertIn("problems: none", out)
+
+    def test_regression_check_log_line_closes_nothing(self):
+        self.write([ready("T2", "; after: T1")], log=closure("T1") +
+                   "- 2026-11-01T10:05Z regression check failed — T1 closed, suite red\n")
+        out = self.report()
+        self.assertIn("1 closed", out)
+        self.assertIn("problems: none", out)
 
     def test_path_that_is_not_utf8_prints_without_a_traceback(self):
         if os.name != "posix":

@@ -79,7 +79,7 @@ First choice, Second choice and Third choice rank the row's three families in pr
 
 | Task type | First choice | Second choice | Third choice | Includes |
 |---|---|---|---|---|
-| Coding | Gemini `medium` | Claude `medium` | GPT `xhigh` | any code deliverable, however small: writing or fixing code, tests, CI, infrastructure and other repository config, frontend implementation code with its styling, comments and docstrings in source, a script delivered to the repo |
+| Coding | Gemini `high` | Claude `high` | GPT `xhigh` | any code deliverable, however small: writing or fixing code, tests, CI, infrastructure and other repository config, frontend implementation code with its styling, comments and docstrings in source, a script delivered to the repo |
 | Coding documentation | Claude `high` | Gemini `high` | GPT `xhigh` | authoring or revising coding-related specifications, implementation plans, proposals and briefs, and developer-facing technical documentation such as setup, API usage, testing and maintenance guides (rule 1) |
 | Review | GPT `xhigh` | Gemini `high` | Claude `high` | reviewers, verifiers, and reviews or audits of existing work, security review included (rules 3–4) |
 | Backend architecture design | Claude `high` | Gemini `high` | GPT `xhigh` | server-side and full-stack system design: service boundaries, data models and schemas, API contracts, storage and integration choices, and the review, verification or audit of that work (rules 4 and 6) |

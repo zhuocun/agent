@@ -6,7 +6,7 @@ Order content for a single top-down read: establish each concept or fact before 
 
 ## Definitions and authoritative locations
 
-1. Give each definition, decision, invariant, rule, contract, complete comparison, and document-level disclaimer one authoritative location. Elsewhere, restate only the minimum local consequence a reader needs in place; do not maintain competing full copies in prose, code, or tables.
+1. Give each definition, decision, invariant, rule, contract, complete comparison, and document-level disclaimer one authoritative location. Elsewhere, restate only the minimum local consequence a reader needs in place; do not maintain competing full copies in prose, code, tables, or figures, except for a glossary or lookup block permitted under **Headings, navigation, and transitions** rule 11.
 2. Keep classification and evaluation axes orthogonal. Do not mix or substitute criteria that answer different questions.
 
 ## Common reader paths
@@ -30,12 +30,13 @@ Move definitions before evaluation when readers need the concepts to judge the d
 2. Use a consistent semantic heading hierarchy. Add numeric heading labels only when the destination convention or navigation need calls for them.
 3. Do not invent parallel module, decision, validation, option, or step ID systems for editorial organization. Use ordered steps when order is operationally meaningful, not as a substitute for semantic names.
 4. Provide the necessary context at the point of use.
-5. Give each section one clear purpose or reader question and keep neighboring sections non-overlapping.
+5. Give each section one clear purpose or reader question and keep neighboring sections non-overlapping. Give peer sections that play the same role the same internal element order, omitting any element a section does not need.
 6. Order sections by the reader's decision path, not by the history of how the team built or discussed the work. Separate audience paths when reviewers, adopters, operators, and implementers need different depth.
-7. Use a short bridge only when it clarifies causality. Put it at the start of the section it introduces, and remove trailing meta-narration about what the document will explain next.
+7. Apart from the framing sentence permitted by **Document policies** 4 in `SKILL.md`, use a short bridge only when it clarifies causality. Put it at the start of the section it introduces, and remove trailing meta-narration about what the document will explain next.
 8. Use question headings only for genuine reader questions and answer them immediately. Prefer declarative headings in settled decision narratives; do not use staged questions to recreate deliberation.
 9. Reuse concept names already established in the source material or domain as navigation anchors; do not coin labels for navigation.
-10. Do not front-load lookup blocks. Make each opaque term readable at its first occurrence in place: use plain wording with the exact code in parentheses, such as "rejected: the record is still referenced (error 1042)," instead of a bare code. An identifier that already reads plainly, such as ERR_TEMPLATE_IN_USE, needs no added gloss. Add a front-of-document glossary, error-code table, or quick-reference only when the owner explicitly asks for one.
+10. When two parallel partitions of the same subject at different levels must share a word, such as management phases and execution phases, state their correspondence once where the second partition appears. Limit it to what the sources establish, and mark any inferred correspondence as inference.
+11. Do not front-load lookup blocks. Make each opaque term readable at its first occurrence in place: use plain wording with the exact code in parentheses, such as "rejected: the record is still referenced (error 1042)," instead of a bare code. An identifier that already reads plainly, such as ERR_TEMPLATE_IN_USE, needs no added gloss. Add a front-of-document glossary, error-code table, or quick-reference only when the owner explicitly asks for one, and an appendix glossary only for terms that recur across sections when readers gain lookup value from it. Either kind repeats each first-use definition without changing its meaning, adds no requirement, and leaves the first-use definition in place as the authoritative one.
 
 ## Definition vs implementation
 

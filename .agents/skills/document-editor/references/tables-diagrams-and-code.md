@@ -1,12 +1,14 @@
 # Tables, diagrams, media, and code
 
-1. Use tables for stable repeated columns such as options and tradeoffs, risks and mitigations, contracts and meanings, scenarios and verification, or phases and success criteria. Use prose for causality, rationale, the reasoning behind a tradeoff, ambiguity, uncertainty, risk, hidden assumptions, and nuanced caveats.
+1. Use tables for stable repeated columns such as options and tradeoffs, risks and mitigations, contracts and meanings, scenarios and verification, or phases and success criteria. Keep the connected reasoning that **Document policies** 4 in `SKILL.md` keeps in prose out of table cells, and present independent points, such as separate rationale, risks, assumptions, or uncertainties, under that policy.
 2. Use parallel table shapes for parallel structures, and do not force uncertain reasoning into apparently precise cells. Tables improve placement; they do not replace the decision narrative.
-3. Give every retained or added diagram, image, video, code block, callout, evidence citation, or other native block an editorial job: evidence, instruction, architecture, workflow, or reference.
-4. Use a diagram only when it explains a spatial, temporal, boundary, state, or relationship model more clearly than prose. Use a format supported by the destination and its maintainers; do not impose one tool or syntax on every document.
-5. Give every figure that must be understood independently the minimum in-place legend needed to read it. Keep semantics consistent by using the same wording in each figure's legend; do not make figures depend on one shared legend. Check decision-tree branches for mutually exclusive and collectively complete coverage.
-6. Place an overview diagram after the framing needed to interpret it and before the details it organizes. Validate an editable diagram with its actual renderer after changes; if rendering cannot be checked, report that limitation.
-7. Introduce code blocks with what they demonstrate and summarize the design implication when it is not obvious. Avoid raw dumps unless required for reproducibility, contract review, or implementation reference.
+3. Keep each cell to one fact, or put parallel items on separate bulleted lines in the destination's syntax. Split items into separate rows when they carry distinct owners, statuses, or verdicts, keeping each condition with its outcome. Label each column with the specific attribute its cells state, rather than a generic label such as "Description" or "Notes".
+4. Give every retained or added diagram, image, video, code block, callout, evidence citation, or other native block an editorial job: evidence, instruction, architecture, workflow, or reference.
+5. Use a diagram only when it explains a spatial, temporal, boundary, state, or relationship model more clearly than prose. Use a format supported by the destination and its maintainers; do not impose one tool or syntax on every document.
+6. Give every figure that must be understood independently the minimum in-place legend needed to read it. Keep semantics consistent by using the same wording in each figure's legend; do not make figures depend on one shared legend. Check decision-tree branches for mutually exclusive and collectively complete coverage.
+7. When space forces shorter figure labels, keep the full claim and its decision-relevant qualifiers in the accompanying text, and also inside any figure that must be understood independently. Never let a shortened label alter the claim.
+8. Place an overview diagram after the framing needed to interpret it and before the details it organizes. Validate an editable diagram with its actual renderer after changes; if rendering cannot be checked, report that limitation.
+9. Introduce code blocks with what they demonstrate and summarize the design implication when it is not obvious. Avoid raw dumps unless required for reproducibility, contract review, or implementation reference.
 
 ## Structured technical expression
 

@@ -1,6 +1,6 @@
 # Preserve structured assets
 
-Keep content and asset mappings only in the editing-session record (working notes and summary to the user), an external approval record, or an owner-named file outside the place where the document is stored; never put a mapping in the document or in any other file stored with it. Keep protected-baseline measurements, required authorizations, and protected-asset change reasons and bases in the editing-session record or external approval record, never in the edited document.
+Keep the editor's disposition records and internal mappings — including which display names on an external publishing surface correspond to which frozen identifiers — only in the editing-session record (working notes and summary to the user), an external approval record, or an owner-named file outside the place where the document is stored; never put those internal records or mappings in the document or in any other file stored with it. Reader-facing mappings needed to understand or act on the document stay in the document under the document's own rules. Keep protected-baseline measurements, required authorizations, and protected-asset change reasons and bases in the editing-session record or external approval record, never in the edited document.
 
 ## Accounting scope
 
@@ -16,3 +16,12 @@ Preserve existing diagrams, images, videos, code blocks, callouts, evidence cita
 4. Treat an asset's item count or byte identity as a protected baseline only when the owner or delivery format defines it. For a controlled baseline change, record the pre-change and post-change values and any required authorization; never change the baseline silently.
 5. When byte-for-byte identity is required, use the configured checksum or comparison method. Do not modify a protected diagram or native asset without authorization; after an authorized change, record its reason and basis and apply the required rendering or behavior checks.
 6. Resolve protected-content conflicts under **Conflict and continuation** in `SKILL.md`. Apply **Document policies** and **Governance applicability** within the resolved scope.
+
+## Parallel copies
+
+When the edited document also lives on an external publishing surface where others edit it:
+
+1. Before editing, fetch the latest published revision and compare both sides against their common baseline. If the published revision or the common baseline is unavailable, hold the write-back and report the limitation.
+2. Subject each external edit to the same checks as your own: **Meaning and authorization** and **Claim-type authority** in `SKILL.md`. Fold each adopted external edit into the edited document. Resolve each conflict by evidence and explicit informed user direction for the content in dispute, never by timestamp or by a fixed rule that one side always wins.
+3. Keep on the target each external edit you do not adopt, hold your conflicting change under **Conflict and continuation** in `SKILL.md`, and record the edit with the reason in the editing-session record. Revert an external edit on write-back only with explicit informed user direction, and disclose each revert to the user.
+4. Before writing back, confirm that the target revision has not changed since the comparison, and make each incremental write conditional on that revision or use an equivalent concurrency safeguard. On a revision mismatch, fetch the latest revision and repeat the comparison; if no safe write mechanism is available, hold the write-back and report the limitation. Preserve destination-native blocks such as callouts, quotations, mentions, embeds, and icons under **Accounting scope**.

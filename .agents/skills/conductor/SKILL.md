@@ -66,7 +66,7 @@ Inspect the dispatch schema and set every exposed parameter on every subagent ca
 
 ## Reviewer
 
-After each worker returns, dispatch its output to a fresh reviewer subagent before integrating. Reviewers run in parallel across multiple worker outputs.
+After each worker returns, dispatch its output to fresh reviewer subagents before integrating: one reviewer, or the pair that **Task types** in `references/dispatch.md` requires, whose verdicts combine as rule 8 of **Task types** directs. Reviewers run in parallel across multiple worker outputs.
 
 Before dispatching the first reviewer or verifier in a session, and again after a compaction before the next one, read `references/review-and-evidence.md` in full: it defines a verifier and the reviewer's input, output and grounding.
 
@@ -93,7 +93,7 @@ A reviewer `pass` does not bypass the orchestrator. Everything a worker, reviewe
 - Verify each subtask against its original goal — scope, expected output, ownership, constraints — and map every DoD obligation to valid evidence for the final integrated candidate under **Verification**.
 - Reconcile conflicts with surrounding code, conventions, and other concurrent subagent edits.
 - Personally inspect the applicable sources and raw evidence, and execute the checks assigned to this gate and any missing checks, including required integration and release checks, before declaring a task done.
-- If integration issues surface, send the worker back with a precise correction prompt and route the corrected work through a fresh reviewer, redo locally, or re-brief through a fresh reviewer cycle — do not paper over.
+- If integration issues surface, send the worker back with a precise correction prompt and route the corrected work through fresh reviewers as **Reviewer** directs, redo locally, or re-brief through a fresh reviewer cycle — do not paper over.
 - Surface unresolved risks, skipped checks, or known gaps explicitly in the final summary.
 
 ## Communication
@@ -121,7 +121,7 @@ Before declaring a conductor task done, read in full every reference file this c
 - [ ] Every dispatch, advisors included, met each item of the **Dispatch check** in `references/dispatch.md`.
 - [ ] Every decision that needed the user's consent went straight to the user; every other hard decision went to an advisor wherever one could run, and each consultation met the **Advisor check** in `references/advisor.md`.
 - [ ] Every brief met each obligation of **In every brief**: ownership of quality, verification at the source, and self-review against the brief's scope and constraints before declaring done, added to the reviewer hop; the applicable verification plan and evidence references; a worker's success criteria traced to the DoD items it serves; the leaf restriction unless the brief lifts it; and correctness and reliability wording, with any security check stated as the defect it prevents.
-- [ ] Every worker artifact, except a pure fact lookup or a mechanical summary you verified at the source in seconds, got an independent reviewer's verdict before integration, and was integrated only on a `pass` you accepted or a `revise`/`redo` you rejected.
+- [ ] Every worker artifact, except a pure fact lookup or a mechanical summary you verified at the source in seconds, got a verdict from every independent reviewer **Reviewer** requires before integration, and was integrated only when each verdict was a `pass` you accepted or a `revise`/`redo` you rejected.
 - [ ] No subtask was reviewed again after its second failed review: it was pulled local or escalated to the user.
 - [ ] Verification followed the claim and risk plan in the DoD or checklist — evidence reuse passed the **Evidence reuse** checks in `references/review-and-evidence.md`, required independent execution ran, and further checks addressed iteration, coverage, invalidation or unresolved results (see **Verification**).
 - [ ] Orchestrator final gate ran — each subtask checked against its goal, cross-subtask conflicts reconciled, every DoD obligation supported for the final integrated candidate, and the orchestrator personally inspected the evidence and completed its assigned and missing checks.

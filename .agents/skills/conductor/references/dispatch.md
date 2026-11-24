@@ -1,6 +1,6 @@
 # Dispatch
 
-Read this file in full before the first dispatch in a session and again after a compaction before the next dispatch. **Model selection** in `SKILL.md` says what each dispatch must carry; this file decides which source, route and workspace carry it, its model, effort and speed request, and its **Reporting** form.
+Read this file in full before the first dispatch in a session and again after a compaction before the next dispatch. **Model selection** in `SKILL.md` says what each dispatch must carry; this file decides which source, route and workspace carry it, its model, effort and speed request, and how to fill each slot of a role line (see **Role line** in `SKILL.md`).
 
 - [Subagent sources](#subagent-sources)
   - [Claude Code routes](#claude-code-routes)
@@ -130,21 +130,16 @@ First choice, Second choice and Third choice rank the row's three families in pr
 
 ## Reporting
 
-**Reporting.** Use this one-line form as the whole announcement of a delegated agent and to name it in any report of it; what it returned is reported as **Communication** in `SKILL.md` directs. Describe only what the dispatch carried; `Fast` or `Ultrafast` records a request, not proof of the serving tier. Report observed serving differences separately when evidence establishes them:
+**Reporting.** Fill each slot of the role line (see **Role line** in `SKILL.md`) as follows. Describe only what the dispatch carried, or, in a role line written before the call, what the prepared call carries. `Fast` or `Ultrafast` records a request, not proof of the serving tier. When evidence establishes that the serving differed from the request, report that difference separately from the role line; report no difference without such evidence.
 
-```
-<Role>: <model> <effort>[ Fast| Ultrafast][ via <route>][ (<tags>)]
-```
-
-- **Role**: a short label for what the agent does.
+- **Role**: a short label for what the subagent does, `Advisor` for an advisor.
 - **Model**: the model's name with its version, not its ID or an alias; when the dispatch carried a mode instead of a model, the product name and the mode, such as "Devin Normal", with no separate speed slot when the mode carried the speed request.
 - **Effort**: the level the dispatch carried, including an explicit override, written Low, Medium, High, xHigh, Max or Ultra; left out when the dispatch carried none.
-- **Fast or Ultrafast**: include only the one the dispatch requested for that agent; omit both for Standard or an unestablished request.
-- **Route**: left out when the host's own in-product subagent mechanism launched the agent, whatever the host calls it; otherwise "<source> CLI" for a headless command line, or the product name plus the kind of interface for any other interface, never a command, flag or internal tool identifier.
-- **Tags**: comma-separated, only those that apply. "fallback model": add this tag when at least one skipped higher-priority family on the row would have occupied the agent's slot, had a source present, and had no source able to run its required model. "Fast unavailable" or "Ultrafast unavailable": the selected mode could not be requested for that agent on the source carrying it.
-- **Two-family rows**: one line per agent that ran, or the lines joined with " + ".
+- **Fast or Ultrafast**: include only the one the dispatch requested for that subagent; omit both for Standard or an unestablished request.
+- **Route**: left out when the call goes through the host's own in-product subagent mechanism, whatever the host calls it; otherwise "<source> CLI" for a headless command line, or the product name plus the kind of interface for any other interface, never a command, flag or internal tool identifier.
+- **Tags**: comma-separated, only those that apply. "fallback model": add this tag when at least one skipped higher-priority family on the row would have occupied the subagent's slot, had a source present, and had no source able to run its required model. "Fast unavailable" or "Ultrafast unavailable": the selected mode could not be requested for that subagent on the source carrying it.
 
-For example: "Reviewer: <model> xHigh via <source> CLI", "Reviewer: <model> High (fallback model)", "Designer: <model> High", "Architect: <model> High + Architect: <model> xHigh via <source> CLI", "Researcher: Devin Normal via Devin child session".
+For example: "Reviewer: <model> xHigh via <source> CLI", "Reviewer: <model> High (fallback model)", "Designer: <model> High", "Researcher: Devin Normal via Devin child session".
 
 ## Dispatch check
 
@@ -154,4 +149,4 @@ For example: "Reviewer: <model> xHigh via <source> CLI", "Reviewer: <model> High
 - [ ] Every delegated role and every advisor ran through the first available source in its family's order that can run the selected model (see **Subagent sources** and **Advisor model** in `advisor.md`): through that source's in-product mechanism when you run in that source and the mechanism can carry the assignment, otherwise through that source's CLI, and through a mode-only route only when no eligible model-carrying route was available.
 - [ ] Every subagent call set every exposed parameter explicitly, the mode included on a mode-only route — no silent platform default, and no tier **Tiers.** forbids for that role unless instructed.
 - [ ] Fast and Ultrafast requests followed explicit user opt-in, named scopes, persistence and precedence; unavailable modes used only authorized alternatives or Standard, and no unauthorized inherited tier was accepted (see **Speed modes**).
-- [ ] Every announcement of a delegated agent, and its name in any report, was one line in the **Reporting** form, with no effort, Fast or Ultrafast the dispatch did not carry; observed serving differences were reported from evidence.
+- [ ] Every role line filled its slots as **Reporting** directs; each serving difference that evidence established was reported separately from the role line, and no difference was reported without such evidence.

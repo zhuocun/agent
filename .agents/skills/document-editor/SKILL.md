@@ -24,7 +24,7 @@ Create, edit, and review formal human-facing documents so readers can find, unde
 Choose the authorized mode, then apply the five passes:
 
 - **Create** — author from authoritative sources. Gather the sources before drafting; do not invent claims or a current state. No pre-existing document means no preservation inventory is needed.
-- **Optimize** — edit an existing document, including wording or translation. Read the full document before editing, record its current section order as a compact outline unless the bounded local-edit conditions in **Accounting scope** (`references/structured-assets.md`; read it in full before the first edit, and again after a context compaction) apply, and establish the required accounting before changing content. Every change must follow a quality rule or an explicit user request. If the owner requires a pre-edit approval gate, present the mapping — each inventoried passage or asset with its planned disposition — at that gate.
+- **Optimize** — edit an existing document, including wording or translation. Read the full document before editing, record its current section order as a compact outline unless the bounded local-edit conditions in **Accounting scope** (`references/structured-assets.md`) apply, and establish the required accounting before changing content. Every change must follow a quality rule or an explicit user request. If the owner requires a pre-edit approval gate, present the mapping — each inventoried passage or asset with its planned disposition — at that gate.
 - **Review** — read the full document and judge it without editing the document or its sources. Establish the review question and evidence baseline. Do not run Optimize's asset-disposition workflow merely to judge a document; state material assumptions and source gaps as review limitations and proceed where the evidence permits.
 
 ### Document policies
@@ -52,7 +52,7 @@ Use known lifecycle facts and user decisions. If a policy conflict remains unres
 
 ## Reference files
 
-Read each file in this list in full when its condition first holds, before applying any of its rules, and again after a context compaction before applying them next.
+Read each file in this list in full when its condition first holds, before applying any of its rules, and again after a context compaction, except that after a compaction you reread `references/governance.md` and `references/independent-review.md` only before you next apply their rules.
 
 - `references/governance.md` (**Governance applicability**): before you add, keep, remove, or judge any signature, approval, status, owner, lifecycle, revision, or history field, and whenever a request asks for governance fields.
 - `references/structured-assets.md` (**Accounting scope**; **Parallel copies**): in Optimize, before the first edit.
@@ -81,7 +81,7 @@ Scale effort and reporting to the task's risk and scope. A short formal passage 
 
 ## 3. Organize for the reader
 
-For Create, outline from the reader's task before drafting and check that each concept is established before use or defined in place. For Optimize, repair the structure within the established accounting scope. In Review, assess the same requirements read-only. Apply this pass's standards, held in `references/structure-and-navigation.md`, `references/decisions-and-evidence.md` and `references/tables-diagrams-and-code.md`, at the depth the reader contract needs; read each file in full when its condition in **Reference files** holds, and again after a context compaction.
+For Create, outline from the reader's task before drafting and check that each concept is established before use or defined in place. For Optimize, repair the structure within the established accounting scope. In Review, assess the same requirements read-only. Apply this pass's standards, held in `references/structure-and-navigation.md`, `references/decisions-and-evidence.md` and `references/tables-diagrams-and-code.md`, at the depth the reader contract needs.
 
 ## 4. Prune by function and clarify expression
 
@@ -99,6 +99,8 @@ Use this pass as the exit gate for Create and Optimize; in Review, report findin
 2. Use semantic review for truth, authority, decision quality, evidence, reader fit, and consistent meaning across text, figures, and exported copies. Deterministic checks cannot establish those qualities, and semantic confidence cannot replace a failing hard check.
 3. Confirm that the document has no section-jump internal links. Verify that every figure, table, attachment, evidence citation to an externally published source, and self-reported quantity resolves to real content.
 
+Where the condition of `references/independent-review.md` under **Reference files** holds, apply **Independent review** in that file.
+
 ### Delivery
 
 Honor the output format that the request, the user's standing preferences, or another applicable instruction sets, including document-only output, inline output, or a form with fixed slots. Keep editorial change accounts and verification reports outside the document; substantive uncertainties stay with the claims they qualify. Disclose material substantive changes, source corrections, unresolved ambiguities, and failed or unavailable checks in every format, without adding routine commentary to document-only output. Fit the rest of the mode-specific account to that format and the task size; a short wording edit needs no unnecessary editorial report. If a blocking issue prevents faithful delivery in that format, surface it rather than claiming completion.
@@ -113,7 +115,7 @@ Honor the output format that the request, the user's standing preferences, or an
 
 For Create and Optimize, check the delivered document; for Review, check coverage and findings without implying that defects were fixed. Report unresolved failures and checks that could not run.
 
-- **Framing and policy:** Did the work follow the priority order and the authorized mode, and did pass 1 cover the reader contract, constraints, and risk, with an explicit not-applicable reason for each skipped check that the owner requires or that guards high-risk content? For Review, did the document and sources remain unchanged? Was each reference file read in full when its condition first held, before any of its rules were applied, and again after any context compaction before they were next applied? Do the **Document policies** and governance rules hold with their stated exceptions or explicit informed user direction? Were unresolved conflicts held without destroying protected content or syntax while independent safe work continued?
+- **Framing and policy:** Did the work follow the priority order and the authorized mode, and did pass 1 cover the reader contract, constraints, and risk, with an explicit not-applicable reason for each skipped check that the owner requires or that guards high-risk content? For Review, did the document and sources remain unchanged? Was each reference file whose condition held read as **Reference files** directs? Do the **Document policies** and governance rules hold with their stated exceptions or explicit informed user direction? Were unresolved conflicts held without destroying protected content or syntax while independent safe work continued?
 - **Authority and meaning:** Do pass 2 and **Unknowns, branches, and decisions** distinguish current state, target state, assumptions, unknowns, defaults, and source conflicts, using the appropriate authority for each claim type? Are decisions, permissions, conditions, and exact details preserved unless a substantive change was authorized or a source-backed factual correction was made and reported?
 - **Accounting:** For Optimize, did the **Accounting scope** match the edit's risk, with every inventoried passage or asset accounted for and protected fields, relationships, and baselines preserved or changed under the required authorization and checks? In Optimize, when the document also lives on an external publishing surface where others edit it, was it reconciled under **Parallel copies**, or was the write-back held and the limitation reported when safe write-back could not be guaranteed?
 - **Reader path:** Does pass 3 meet the applicable rules of its reference files, with a forward read at the right abstraction and depth, authoritative definitions, non-overlapping sections, distinct narrative and registry layers, complete evidence and action paths, and tables, diagrams, and technical forms that keep each claim and its decision-relevant qualifiers, including inside standalone figures?

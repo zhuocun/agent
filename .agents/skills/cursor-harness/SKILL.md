@@ -17,6 +17,16 @@ Priority order, highest first: **no task is lost → no finished job goes unnoti
 - **Mark a ledger entry `done` only with evidence:** exit code and artifact for runs, a result verified as [verification](references/delegation.md#verifying-delegated-results) describes for subagents and external agent CLIs, and an observable outcome for tasks.
 - **Quote the user's exact words** for new tasks and acceptances.
 
+## Reference files
+
+Load the topic file when its situation arises.
+
+- [references/task-ledger.md](references/task-ledger.md): starting multi-task work; picking a ledger location; deciding entry states.
+- [references/background-work.md](references/background-work.md): running anything long: shell jobs, `AwaitShell`, tmux plus waiter, safety timers, hangs.
+- [references/delegation.md](references/delegation.md): dispatching Task subagents or external agent CLIs; verifying their results.
+- [references/platform-tools.md](references/platform-tools.md): dynamic tools, Cloud Agent diagnostics, subscriptions, self-hosted machine rules.
+- [references/field-notes.md](references/field-notes.md): before an unfamiliar shell technique; after discovering a new quirk.
+
 ## Operating loop
 
 ### 1. Keep one ledger
@@ -57,24 +67,12 @@ Before your final message:
 2. Confirm every running entry has a live completion signal and, where a timer tool exists, a safety timer covers it; where no timer tool exists, say in the report that nothing collects the run until the user's next message.
 3. Report open work using [ledger reporting](references/task-ledger.md#reporting).
 
-## References
-
-Load the topic file when the situation arises.
-
-| File | Read when |
-| --- | --- |
-| [references/task-ledger.md](references/task-ledger.md) | Starting multi-task work; picking a ledger location; deciding entry states |
-| [references/background-work.md](references/background-work.md) | Running anything long: shell jobs, `AwaitShell`, tmux plus waiter, safety timers, hangs |
-| [references/delegation.md](references/delegation.md) | Dispatching Task subagents or external agent CLIs; verifying their results |
-| [references/platform-tools.md](references/platform-tools.md) | Dynamic tools, Cloud Agent diagnostics, subscriptions, self-hosted machine rules |
-| [references/field-notes.md](references/field-notes.md) | Before an unfamiliar shell technique; after discovering a new quirk |
-
 ## Maintenance
 
 When you confirm a reusable Cursor Harness fact or fix:
 
 - Put it in the topic file it belongs to. If none fits, put it in `references/field-notes.md`, using its entry format.
-- When three or more field notes share a topic, move them into the matching reference file, or create `references/<topic>.md` and add it to the table under [References](#references).
+- When three or more field notes share a topic, move them into the matching reference file, or create `references/<topic>.md` and add it to the list under [Reference files](#reference-files).
 - Mark each fact as **verified** (you ran it, with date), **documented** (from Cursor's tool descriptions or docs), or **unverified**. Upgrade or delete entries when evidence changes. Never keep contradictory statements.
 - Keep the skill machine-agnostic and project-agnostic: no absolute paths, usernames, session IDs, ports, proxy addresses, product codenames, or credentials. Keep project-specific lessons in the project's memory.
 
@@ -87,3 +85,4 @@ When you confirm a reusable Cursor Harness fact or fix:
 - [ ] Nothing was marked done without evidence; new tasks and acceptances quote the user's exact words.
 - [ ] My final message groups open entries as running, waiting on you, and queued, and for running work says where to look and what happens on completion.
 - [ ] New reusable facts went to the right reference with a status label.
+- [ ] Each topic file under **Reference files** was loaded when its situation arose.

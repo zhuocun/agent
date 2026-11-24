@@ -22,7 +22,12 @@ Priority: the user's consent rules and standing authorizations → truthful stat
 
 **Start.** Apply this skill only to a queue you own under pass 2. On start, on resume (continuing the loop in a new session, or after a pause or stop), after compaction, or when this text is incomplete, read this skill through **Self-check**, then establish ownership, check **stop**, keep pass 4's gates and complete **Rebuild** before any queued action or loop status report; if ownership or these instructions cannot be recovered, only inspect evidence.
 
-Read [Scale](references/scale.md) in full before the first iteration in which the state file exceeds 100 lines, `parallel` is above 1 or you plan to raise it, or a worker does or is to do an item, and again after each compaction while any of these holds.
+## Reference files
+
+Read Scale in full before the first iteration in which its condition holds and again after each compaction while it holds, and read the common setup and the current host's section of Host setup in full at the listed times and again after a host or mode change or when no complete copy is in context.
+
+- [Scale](references/scale.md) (status, worker coordination, queue maintenance, and budget) — the state file exceeds 100 lines, `parallel` is above 1 or you plan to raise it, or a worker does or is to do an item.
+- [Host setup](references/hosts.md) (hook registration, owner IDs, and waiters) — before registering the hook, resolving the owner ID or choosing a waiter.
 
 ## 1. Keep one state file
 
@@ -63,7 +68,7 @@ A malformed header or item line can silently end the hook's automatic continuati
 
 One session owns the state file: only it runs iterations and edits the file, and the user may edit it at any time.
 
-- **Host:** read the common setup and the current host's section of [Host setup](references/hosts.md) in full before registering the hook, resolving the owner ID or choosing a waiter, and again after a host or mode change or when no complete copy is in context. Run a registration command it gives only after the user consents and chooses user or project scope; that consent covers no other installation, policy, permission, trust or limit change. Confirm that the hook is active, editing its command only within the authorized setup. Without an active hook, run owned, authorized work within turns; the user's next message continues the loop.
+- **Host:** run a registration command from Host setup only after the user consents and chooses user or project scope; that consent covers no other installation, policy, permission, trust or limit change. Confirm that the hook is active, editing its command only within the authorized setup. Without an active hook, run owned, authorized work within turns; the user's next message continues the loop.
 - **Owner ID:** use this session's exact ID from the host's **Owner ID** route in Host setup, never a child's or an unrelated identifier; without one, leave a new loop's `owner:` empty and run within turns. When `owner` names another session, only read the file, and write your own ID only when the user explicitly asks you to take over; a missing ID, a wake or a notification never changes `owner`.
 - **One controller:** run no second continuation controller, such as a host's native goal or loop feature, in the same session.
 
@@ -117,7 +122,7 @@ Give the loop facts in each turn's final message: the current item, or idle or t
 
 ## Self-check
 
-- **Start:** every step of **Start** done before acting, and Scale read in full and followed when due?
+- **Start:** every step of **Start** done before acting, both files read as required under **Reference files**, and Scale followed when due?
 - **State:** the file meets pass 1, and every change was saved under **Record** before further scheduling or reports?
 - **Turns:** each turn followed passes 2 to 5 and ended only as pass 3 allows, with `stop:` set only under pass 6 or **stop**, and neither cleared nor queued work authorized by another hook's feedback or a completion notification alone?
 - **Report:** each final message carries pass 7's loop facts, meeting **Count** and **Report**?

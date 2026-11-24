@@ -14,9 +14,18 @@ Keep a Codex controller's owned work accounted for until its authorized outcome 
 
 Priority order, highest first: **current user instructions → reliable task accounting → prompt handling of results → useful work during waits → low monitoring cost**.
 
+## Reference files
+
+Read a file in full where its bullet says "in full", and a named section where its bullet names one, before the work its condition names. After a compaction, read them again as **2. Reconstruct the current task** directs.
+
+- [task-ledger.md](references/task-ledger.md) (ledger storage, registration, fields and states): in full during **1. Record ownership**; its section [Handle messages and races](references/task-ledger.md#handle-messages-and-races) when new user steering arrives; its section [Guards and handoffs](references/task-ledger.md#guards-and-handoffs) before an interruption or turn exit.
+- [delegation.md](references/delegation.md) (settings and briefs): in full when you choose an execution vehicle; its section [Controller review and continuation](references/delegation.md#controller-review-and-continuation) when you review an agent's result.
+- [background-work.md](references/background-work.md), by section: [Choose ownership before launch](references/background-work.md#choose-ownership-before-launch) before launching or monitoring long work; [Validate completion](references/background-work.md#validate-completion) when checking CLI evidence for completion; [Suspected hangs and retry limits](references/background-work.md#suspected-hangs-and-retry-limits) when checking a suspected hang or preparing a stop or retry; [Native owner and read-only watcher](references/background-work.md#native-owner-and-read-only-watcher) when you use a watcher.
+- [platform-tools.md](references/platform-tools.md) (host distinctions and evidence details): in full during **6. Check capabilities and retain evidence**.
+
 ## 1. Record ownership
 
-Use one durable ledger that links asks, actual project lifecycle, branches or worktrees, agents, attempts, artifacts, signals, and next authorized actions. Reuse the owning project's tracker when applicable. Machine-level work does not create a feature lifecycle. Read [task-ledger.md](references/task-ledger.md) for storage, registration, fields, and states.
+Use one durable ledger that links asks, actual project lifecycle, branches or worktrees, agents, attempts, artifacts, signals, and next authorized actions. Reuse the owning project's tracker when applicable. Machine-level work does not create a feature lifecycle. `references/task-ledger.md` holds its storage, registration, fields and states.
 
 ## 2. Reconstruct the current task
 
@@ -32,7 +41,7 @@ Handle short work directly. Delegate only when current user and host instruction
 
 For a required external CLI, prefer an authorized native lifecycle owner when available. That agent launches and manages a bounded CLI run through terminal reporting. For existing jobs whose ownership cannot change, one bounded, read-only native watcher can cover several jobs.
 
-Read [delegation.md](references/delegation.md) for settings and briefs, and [background-work.md — Choose ownership before launch](references/background-work.md#choose-ownership-before-launch) before launching or monitoring long work.
+`references/delegation.md` holds settings and briefs, and **Choose ownership before launch** in `references/background-work.md` holds the ownership rules for long work.
 
 ## 4. Wait, validate, and continue
 
@@ -60,7 +69,7 @@ Check current exposed schemas before relying on a host capability. Keep capabili
 
 Keep reusable facts in the relevant reference. Label them documented, verified with date and scope, or unverified. Retain the mechanism and verified scope. Remove contradicted claims. Keep task-specific machine paths, identifiers, credentials, project details, and observation sources in the task's own records.
 
-Read [platform-tools.md](references/platform-tools.md) for host distinctions and evidence details.
+`references/platform-tools.md` holds host distinctions and evidence details.
 
 ## Self-check
 
@@ -73,3 +82,4 @@ Read [platform-tools.md](references/platform-tools.md) for host distinctions and
 - [ ] Agent deliverables satisfy **Controller review and continuation** where applicable.
 - [ ] Before interruption or exit, coverage and reporting satisfy **5. Establish coverage before exit**, with watcher mechanics and handoff details checked against **Native owner and read-only watcher** and **Guards and handoffs** where applicable.
 - [ ] Host capabilities were checked before reliance, every claimed capability and monitoring promise has support from current tool contracts and verified delivery scope, and reusable facts satisfy **6. Check capabilities and retain evidence**.
+- [ ] Each file or section under **Reference files** whose condition held was read before the work its condition names.

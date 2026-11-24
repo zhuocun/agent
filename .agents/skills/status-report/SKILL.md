@@ -38,11 +38,11 @@ Write plain Markdown that stays legible as plain text, in the neutral voice — 
 
 Read each file in full when its condition holds, before applying its rules, and again after context compaction. To review or edit a report, also read each file whose condition the supplied report meets:
 
-- `references/report-detail.md`: before collecting sources for a current report, and before building, editing or reviewing the Tasks table or Health.
-- `references/prior-report.md`: when a prior report exists, before marking movement in the table or writing `Changes since`.
-- `references/overflow.md`: when the Tasks table would exceed 10 tasks or 20 table rows or has a rolled or folded row, or more than five items qualify for `Action required`.
-- `references/blocking-chains.md`: when a `Blocked` subtask's Dependency names another subtask as its blocker.
-- `references/illustrations.md`: when a report has or adds any illustration other than the Blocked line.
+- `references/report-detail.md` (sources, Tasks table fields, Health gates and release surfaces): before collecting sources for a current report, and before building, editing or reviewing the Tasks table or Health.
+- `references/prior-report.md` (change bullets and delta markers): when a prior report exists, before marking movement in the table or writing `Changes since`.
+- `references/overflow.md` (Tasks table and Action required caps): when the Tasks table would exceed 10 tasks or 20 table rows or has a rolled or folded row, or more than five items qualify for `Action required`.
+- `references/blocking-chains.md` (chain resolution and matching asks): when a `Blocked` subtask's Dependency names another subtask as its blocker.
+- `references/illustrations.md` (illustration licensing and dependency graphs): when a report has or adds any illustration other than the Blocked line.
 
 ## Passes
 
@@ -69,7 +69,7 @@ Retain these fields: Task, Subtask, Status, Progress, Executor, Dependency, Evid
 - **Paused needs an ask.** Every `Paused` subtask has a matching `Action required` item, a **Decision** to assign an executor or confirm the pause; where no owner is known, the ask is "who owns this?".
 - **Evidence** is never blank. Cite an openable source that supports the particular status, count, identity or dependency claimed; qualify unsupported fields `(unverified)` and give their confirming source in `Unverified claims`. Use `unverified — see Unverified claims` when no supporting source is available.
 - **Order deterministically**: tasks by attention order `Blocked, Unknown, In progress, Not started, Done, Dropped`, then alphabetically on task name; subtasks under their task in known execution order — for example `Development` before `Review` before `Release`. Ordering alone asserts no dependency.
-- **Cap at 10 tasks and 20 table rows.** Never drop a task to fit. Over either cap, roll and fold rows as `references/overflow.md` directs.
+- **Cap at 10 tasks and 20 table rows.** Never drop a task to fit. Use **Tasks table cap** in `references/overflow.md` for rolling and folding.
 
 ### 3. Count progress — the denominator rule
 
@@ -88,7 +88,7 @@ An item belongs in this one slot only when someone other than the writer must ac
 
 `- **<Blocked|Decision>** — <ask> — unblocks when <action or date>, owner <who, or "outside the project's control"> — <cost of leaving it> — <reference>`
 
-A carried item marks its age: `(open since <anchor>)`. Order by cost of inaction, not by type. **A `Blocked` subtask is invalid without a matching item here, unless its Dependency names another subtask as its blocker**; the Blocked line carries that dependency. Follow such a chain to the subtask at its end as `references/blocking-chains.md` directs. **A `Paused` subtask is invalid without a matching item here.** One item may match two subtasks if it names both. Cap five; an item that matches a `Blocked` or `Paused` subtask is never cut. When more than five items qualify, apply **Action required overflow** in `references/overflow.md`.
+A carried item marks its age: `(open since <anchor>)`. Order by cost of inaction, not by type. **A `Blocked` subtask is invalid without a matching item here, unless its Dependency names another subtask as its blocker**; the Blocked line carries that dependency. Follow such a chain to the subtask at its end as `references/blocking-chains.md` directs. **A `Paused` subtask is invalid without a matching item here.** One item may match two subtasks if it names both. Cap five; an item that matches a `Blocked` or `Paused` subtask is never cut. Use **Action required overflow** in `references/overflow.md` to handle overflow.
 
 ### 6. Write `Health` — product first, pipeline second
 
@@ -114,6 +114,7 @@ Keep illustrations mechanically derivable from the Tasks table and useful at the
 
 ## Self-check
 
+- [ ] **Reference files**, each read as that section directs.
 - [ ] **Form:** unless **Scope and form** applies, seven slots in fixed order; every `##` heading printed: `None.` if empty; `Not checked.` if unexamined, or if wholly unreachable with one `Unverified claims` line; if partly reached, what was reached, each unfilled field `(unverified)` with its own `Unverified claims` line; one report language, identifiers intact, abbreviation meanings from sources; `—`, `None` and `Unknown (unverified)` distinct; at most about 50 lines; every other `## Form` rule.
 - [ ] **Header and verdict:** the header carries the revision the Tasks table was read at (one per surface if several), the date, and the time with its zone; the verdict names the one pivotal item, adds no claim beyond the two pass 8 exceptions, and says so if an `Unverified claims` item would overturn it.
 - [ ] **Tasks table:** the pass 2 fields, levels, terminal rows, derived statuses, order and caps, rolled and folded as `references/overflow.md` directs; never a task dropped.

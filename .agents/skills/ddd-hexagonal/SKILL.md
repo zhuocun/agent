@@ -25,7 +25,7 @@ Apply this priority order: **effective requirements and authorization > business
 
 ## Standing Rules
 
-These rules hold throughout the task. Each bullet carries the number of its pass clause; the rest of that clause is in its reference file (Reference Files).
+These rules hold throughout the task. Each bullet carries the number of its pass clause; the rest of that clause is in its reference file under **Reference files**.
 
 - **1.1** Distinguish repository obligations from this skill's default standard and other guidance: report a fidelity deviation against its named rule with the faithful form as the recommended direction, never as an undocumented repository violation. Implementation does not lower the target, and design does not prove implementation; label changes to approved decisions as proposals. Propose justified changes to rules, documents, and guards together; never weaken correct constraints to fit code.
 - **1.2** Repetition, agreement, reviewer identity, and producer self-assessment do not prove a claim.
@@ -55,6 +55,15 @@ Apply these fidelity rules; cite them by number in findings:
 
 Fidelity does not mean more structure. Every element answers a present invariant, boundary, use case, consumer, or reachable failure; hypothetical future flexibility is not necessity, and ongoing structure without a present need is a defect whatever it cost to build. Add dedicated read models, event sourcing, sagas, separate stores, messaging infrastructure, or extra layers only for a present requirement. Rigor is never overdesign: do not remove real validation, failure classification, concurrency guards, readable names, or effective negative tests merely to reduce code. Any context or component may omit a tactical element (an aggregate with its repository, an entity, a domain event, or a domain service) that no present invariant, lifecycle, consumer, or boundary requires, for example a genuinely simple data service or a technical pipeline whose rules are parsing, routing, transformation, and delivery rather than business invariants. Omitting aggregates requires a written omission record naming each omitted element, showing why no invariant or boundary requires it, and stating a reconsideration trigger; elements added only on need (domain events, domain services, anti-corruption layers) need no record when that need is absent. Subdomain type alone neither requires nor waives an element; invariants decide (F4). Assess actual invariants and model needs; competing writers or a foreign dependency alone do not require aggregates, domain events, or domain services. Omission never relaxes inward dependencies, domain purity, adapter/port role separation, authorization, failure guarantees, or verification.
 
+## Reference files
+
+Read each file in full when its condition holds or a rule cites a clause from it by number, before applying any of its clauses, and again after a context compaction.
+
+- `references/design-and-structure.md` (standard vocabulary, Passes 1-3, 9.1-9.2): at the start of every task, because 1.1-1.6 serve the basic path's mandate and impact closure and the basic path's necessity challenge is 2.2; and when **Structure and fidelity** applies or **Evolution and proof** triggers 9.2.
+- `references/state-and-concurrency.md` (Passes 4-6): when **Data and state** or **Concurrency and integration** applies, or **Operations and protection** triggers a Pass 5 check.
+- `references/operations-and-evolution.md` (Passes 7-8): when **Concurrency and integration** triggers a deadline, overload, or resource check, **Operations and protection** triggers a Pass 7 check, or **Evolution and proof** triggers Pass 8.
+- `references/reporting-and-proof.md` (Deliverable slots 1-8, 9.3-9.5, worked omission records): before writing any report, running or claiming any validation, writing reusable instructions, or writing an omission record, and when **Evolution and proof** triggers compatibility evidence or 9.5.
+
 ## Select The Review Depth
 
 Run the basic path: establish mandate and impact closure, challenge mechanism necessity, inspect affected responsibilities/contracts against the default standard, and report evidence and limits. Classify as **Basic** when tracing excludes changed guarantees and reachable specialist risks; **Focused** when a specific risk is reachable; **Consequential** when reachable failure threatens material data loss, unauthorized effects, or required cross-boundary, availability, or recovery guarantees. Simple localized work without those risks uses only the basic path; size alone does not establish safety. Basic narrows scope and reporting, not the fidelity bar.
@@ -73,17 +82,9 @@ Use applicable slots in order; combine headings when useful. For Basic work, ret
 
 Focused reports include triggered proofs; Consequential reports expose decision-driving scenarios, failure evidence, and residual risks separately. Explicit effective reporting obligations override shortcuts. Accept a decision or review report separately from correction or release acceptance. Keep only actually required adjudication, independent-review, or execution gates pending; do not invent gates.
 
-## Reference Files
-
-The passes and Deliverable slots are in four reference files, which keep their clause numbers. Also read the file that holds any clause a rule cites by number.
-
-- `references/design-and-structure.md` (standard vocabulary, Passes 1-3, 9.1-9.2): at the start of every task, because 1.1-1.6 serve the basic path's mandate and impact closure and the basic path's necessity challenge is 2.2; and when **Structure and fidelity** applies or **Evolution and proof** triggers 9.2. Read it in full before applying any of its clauses, and again after a context compaction.
-- `references/state-and-concurrency.md` (Passes 4-6): when **Data and state** or **Concurrency and integration** applies, or **Operations and protection** triggers a Pass 5 check. Read it in full before applying any of its clauses, and again after a context compaction.
-- `references/operations-and-evolution.md` (Passes 7-8): when **Concurrency and integration** triggers a deadline, overload, or resource check, **Operations and protection** triggers a Pass 7 check, or **Evolution and proof** triggers Pass 8. Read it in full before applying any of its clauses, and again after a context compaction.
-- `references/reporting-and-proof.md` (Deliverable slots 1-8, 9.3-9.5, worked omission records): before writing any report, running or claiming any validation, writing reusable instructions, or writing an omission record, and when **Evolution and proof** triggers compatibility evidence or 9.5. Read it in full before applying any of its clauses, and again after a context compaction.
-
 ## Self-check
 
+- [ ] Check that each file was read as **Reference files** directs.
 - [ ] Reconcile applicable slots, grounded omissions, obligation rows, provisional verification, final dispositions, and counts. Separate report acceptance from pending adjudication/review and correction/release acceptance.
 - [ ] Recheck authoritative clauses, authorization, differences in protected objects, approved behavior changes, owner choices, and bounded exceptions. Confirm that no finding treats guidance as a repository breach and that no exception or gap counts as approved or closed merely because it is registered.
 - [ ] Check every affected element against F1-F12 at principal-architect strictness. Confirm that direction came from the default standard, principle, and best practice; that cost only chose among equally faithful options or sequenced and phased the work, and existing code only sequenced and phased it; and that no weaker or transitional form is called strict DDD or hexagonal.

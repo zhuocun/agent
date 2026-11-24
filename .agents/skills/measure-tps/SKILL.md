@@ -20,7 +20,13 @@ Prioritize route and configuration fidelity, then timing and counting validity, 
 - Record the exact requested and observed model IDs, requested effort and any effective-effort evidence, requested tier, and actual served tier when the provider attests it. Label a client's resolved setting as configuration evidence. Use `unavailable` for missing evidence and `not applicable` for unsupported controls. A settings flag, speed label, normal-looking response, or latency reading cannot verify the served tier. Report the health of the route and the evidence for any fallback.
 - Use a synthetic prompt. Allowlist visible assistant text and safe metadata before writing artifacts. Leave account identifiers, credentials, authorization headers, raw request dumps, reasoning text, and reasoning summaries out of benchmark artifacts. Use the client's no-persistence option when available. When the user requires no client retention, use a capture that meets that requirement or report the route's retention limit.
 - Use a single monotonic clock at the observation boundary. Timestamp actual incrementally received text. Keep completed messages, snapshots, terminal counters, and chunk durations from replacing the arrival times. Report rates as client-observed. Use engine decode TPS only with provider-side token counts and generation timestamps from the same interval. Hidden reasoning counts without independent matching generation times yield a count with TPS unavailable.
-- Read [Client capture](references/client-capture.md) in full when collecting from a CLI or API, and read it again after compaction. Read [Trace and metrics](references/trace-and-metrics.md) in full when capturing, calculating, or interpreting results, and read it again after compaction.
+
+## Reference files
+
+Read each file in full when its condition holds and again after compaction.
+
+- [Client capture](references/client-capture.md) (collector setup and event mappings) — when collecting from a CLI or API.
+- [Trace and metrics](references/trace-and-metrics.md) (trace format, metric boundaries, and comparable evidence) — when capturing, calculating, or interpreting results.
 
 ## 1. Design the run
 
@@ -57,6 +63,7 @@ Include the client version and route, requested and observed settings with their
 
 ## Self-check
 
+- [ ] Each file whose condition held was read as required under **Reference files**.
 - [ ] The actual route, model, effort, and tier match the requested condition wherever evidence permits, with unknowns and fallbacks reported.
 - [ ] The trace uses real monotonic arrival times and only approved visible text and safe metadata.
 - [ ] Each count describes the named text or provider counter, and each elapsed interval uses the stated endpoints.

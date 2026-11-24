@@ -36,6 +36,12 @@ regression behind a loading spinner.
   `git status` shows only the intended app fix — never the harness, the
   driver, or the PNGs.
 
+## Reference files
+
+Read the file in full at the time specified below, before applying its rules, and again after a compaction during the task.
+
+- [Playwright capture harness](references/playwright-harness.md) (capture script, fixtures, verification, and root-cause probes) — at the start of every task.
+
 ## Loop
 
 1. **Set up the capture environment.** See **Setup** — this is where
@@ -44,8 +50,8 @@ regression behind a loading spinner.
    the harness's viewports) from the repo, not from memory. See
    **Repo-agnostic discovery**.
 3. **Capture** the matrix with the harness in
-   `references/playwright-harness.md`. Keep the harness structure
-   (mocks, content wait, error capture, verification) unchanged;
+   `references/playwright-harness.md`. Keep the harness structure (mocks, content
+   wait, error capture, verification) unchanged;
    parameterize the port, API base and observed request surface, fixtures
    and routing, auth and theme seed, and the capture matrix, including each
    entry's `media`, `steps`, final route/state checks and choice of one of
@@ -266,6 +272,7 @@ Per PNG, in both light and dark and at phone + desktop widths:
 
 Before declaring a sweep done, confirm:
 
+- [ ] The Playwright capture harness was read as required under **Reference files**.
 - [ ] Setup ran in full: `playwright` resolved from the repo's existing
   dependency or installed in the script directory, with the manifest and
   lockfile untouched; a chromium binary installed; a `chromium.launch()`

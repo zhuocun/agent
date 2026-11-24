@@ -74,10 +74,10 @@ assignment into a different shell unchanged.
   the assigned model, family, source or effort. If no documented Ultrafast control
   is verified in a source's section of this file, treat Ultrafast as unavailable
   there.
-- **Reporting**: report each run in the one-line form of **Reporting** in
-  `dispatch.md`, from what the invocation carried. Run records and catalog labels
-  in each source's **Output and verification** help confirm that the run used the intended model, effort and request;
-  the report never claims a serving tier from a label.
+- **Reporting evidence**: the run records and catalog labels in each
+  source's **Output and verification** help identify the model, effort and
+  speed request the invocation carried; a label never establishes a
+  serving tier.
 - **Output and completion**: capture the final answer and check the exit status,
   stderr and terminal outcome; ordinary-looking text can describe a failed run.
   Allow multi-minute execution with a generous timeout or background execution
@@ -153,8 +153,7 @@ supported `CLAUDE_CONFIG_DIR` override rather than assuming a home location.
   applicable cap across scopes, with `modelSettings.<model>.maxEffortLevel`
   replacing the same file's top-level cap for that model. Caps constrain flag,
   environment and frontmatter routes. Organization-cap warnings are suppressed
-  in JSON output. A lower effective level is the level the run carries, and
-  the report names it.
+  in JSON output. A lower effective level is the level the invocation carries.
   `ultracode` is a separate mode, not an effort level.
 - **Auth**: `claude auth status` returns 0 for a login and 1 otherwise; JSON
   `authMethod` identifies the method. `ANTHROPIC_API_KEY` takes precedence over

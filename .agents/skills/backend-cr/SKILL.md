@@ -28,6 +28,29 @@ Priority order: **authorization, data integrity and business correctness > failu
 - **Do not invent limits.** When a judgment needs an unsourced number (latency, page size, retention), name the owner who must decide and the conclusion that depends on it.
 - **Keep to backend code and this report form.** Review the backend code, schema, configuration and tests in the change; read other code only to trace what reaches the backend and list it under not covered, unless the request asks to review it in its own section, which then names each non-backend file left unreviewed. The Step 6 form overrides other guidance on a reply's shape, such as a loaded style or brevity instruction or a standing preference, which then governs only wording; only the user's explicit request for this review or the project's required review form replaces it, and that form still carries the verdict and every finding field.
 
+## Reference files
+
+Read each file in full when its condition first holds, before applying it, and again after a compaction; in Risk Checks, its opening paragraph and each section whose trigger is in the change.
+
+- `references/writes-and-effects.md` (2.2 protections against concurrent writes, 2.3–2.5): an entry writes stored data or shared memory, calls or publishes to another system, consumes messages, runs as a job or retries.
+- `references/values-and-load.md` (2.7–2.9): an entry handles money, numbers, times or stored text, compares with a limit, lists, pages or batches, queries in a loop, without a limit or with a new filter, or calls another system or retries.
+- `references/compatibility.md` (2.10): the change adds a migration or alters a schema, API, message format, stored values old code reads, documented behavior, setting or flag, removes a field, method or endpoint, or claims released behavior is preserved.
+- [Risk Checks](references/risk-checks.md): a trigger in this table is in the change.
+
+| Trigger in the change | Section |
+| --- | --- |
+| Clocks across machines; value equality, collection identity, replacements | Values, Time and Collections |
+| Locks, connection pools, leases or waits on other work | Locks and Progress |
+| Queues, jobs, async commands, compensation, resource lifetimes | Asynchronous Work and Recovery |
+| Deadlines, expensive input, shared capacity, retry chains | Budgets and Capacity |
+| An existing cache, or an offline data investigation | Caches and Diagnostics |
+| Personal or secret data | Data Protection |
+| Live migration of retained data, destructive conversion, rollback, dynamic configuration | Migration, Release and Configuration |
+| Protocol or format changes | Compatibility Evidence |
+| Failure logging, or a silent failure that could hide accepted work | Logs and Detection |
+| Direct or transitive dependency upgrades | Dependency Upgrades |
+| A test in the change claims to prove concurrency, dependency-failure or money behavior | Test Evidence |
+
 ## Step 1: Map the change
 
 1. Identify the revision and requirements, including any QA story set given (user stories with acceptance criteria); without one, do not invent stories. Re-check earlier review comments: on a later round of the same change, review the changes since the last reviewed revision and verify each earlier finding's fix instead of re-reviewing everything.
@@ -78,29 +101,6 @@ For each changed behavior and test, ask: if the change were reverted or the guar
 Defect signs: no assertion, or only not-null, no exception or status 200; an expected value computed by the code under test; asserting a mock's own return value; verifying a mock call but not the result or stored state; a catch swallowing failures; a disabled test; fixed sleeps or identical payloads standing in for a concurrency test; a test name promising what the assertions do not check; only the happy path for a change that adds a rejection.
 
 A missing test is a test gap, not a production defect, unless a project rule requires it. A test that claims a behavior but cannot fail is a finding, rated by what it lets through. Say which tests you ran, on which revision, with what result; reading code is not running it.
-
-### Conditional sections
-
-Read each file in full when its condition first holds, before applying it, and again after a compaction; in Risk Checks, its opening paragraph and each section whose trigger is in the change.
-
-- `references/writes-and-effects.md` (2.2 protections against concurrent writes, 2.3–2.5): an entry writes stored data or shared memory, calls or publishes to another system, consumes messages, runs as a job or retries.
-- `references/values-and-load.md` (2.7–2.9): an entry handles money, numbers, times or stored text, compares with a limit, lists, pages or batches, queries in a loop, without a limit or with a new filter, or calls another system or retries.
-- `references/compatibility.md` (2.10): the change adds a migration or alters a schema, API, message format, stored values old code reads, documented behavior, setting or flag, removes a field, method or endpoint, or claims released behavior is preserved.
-- [Risk Checks](references/risk-checks.md): a trigger in this table is in the change.
-
-| Trigger in the change | Section |
-| --- | --- |
-| Clocks across machines; value equality, collection identity, replacements | Values, Time and Collections |
-| Locks, connection pools, leases or waits on other work | Locks and Progress |
-| Queues, jobs, async commands, compensation, resource lifetimes | Asynchronous Work and Recovery |
-| Deadlines, expensive input, shared capacity, retry chains | Budgets and Capacity |
-| An existing cache, or an offline data investigation | Caches and Diagnostics |
-| Personal or secret data | Data Protection |
-| Live migration of retained data, destructive conversion, rollback, dynamic configuration | Migration, Release and Configuration |
-| Protocol or format changes | Compatibility Evidence |
-| Failure logging, or a silent failure that could hide accepted work | Logs and Detection |
-| Direct or transitive dependency upgrades | Dependency Upgrades |
-| A test in the change claims to prove concurrency, dependency-failure or money behavior | Test Evidence |
 
 ## Step 3: Verify each candidate
 

@@ -646,6 +646,182 @@ class TestVisualHtmlChecker(unittest.TestCase):
         self.assertIn("Foreign Term", problems)
         self.assertNotIn("HiddenTerm", problems)
 
+    def test_open_figure_forms_patterns_widths_and_display_type_pass(self) -> None:
+        html = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Open forms</title>
+<style>
+h1, h2 { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; }
+.vh-lead { font-size: 17px; }
+figure { margin-inline: 0; }
+figure svg { display: block; width: 100%; height: auto; margin-inline: auto; }
+.narrow { display: none; }
+@media screen and (width < 1104px) { .wide { display: none; } .narrow { display: block; } }
+@media screen and (width >= 770px) { figure[data-breakpoint="770"] .wide { display: block; } figure[data-breakpoint="770"] .narrow { display: none; } }
+@media screen and (width < 770px) { figure[data-breakpoint="770"] .wide { display: none; } figure[data-breakpoint="770"] .narrow { display: block; } }
+</style>
+</head>
+<body>
+<svg class="defs" aria-hidden="true" focusable="false" width="0" height="0" style="position:absolute">
+  <defs>
+    <pattern id="vh-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <path d="M0,0 V6" stroke="#353E50" stroke-width="1" />
+    </pattern>
+    <marker id="vh-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,5 L0,10 z" />
+    </marker>
+  </defs>
+</svg>
+<p class="vh-legend"><svg role="img" aria-label="Solid line sample" width="28" height="12" viewBox="0 0 28 12"><path d="M0 6 H28" /></svg> Read path</p>
+<section data-section="1">
+  <h2>Cache hits cut read latency</h2>
+  <p class="vh-lead">One read is traced through the cache and the store.</p>
+  <figure data-figure="trace">
+    <svg class="wide" data-layout="wide" viewBox="0 0 960 300" style="max-width:1008px"
+         role="img" aria-label="One read traced from the client through the cache to the store.">
+      <g data-node="client"><circle cx="60" cy="150" r="30" /><text x="60" y="200" font-size="16" data-text-kind="node-title">Client</text></g>
+      <g data-node="axis"><text x="480" y="40" font-size="14">Read path</text></g>
+      <g data-node="hit" data-source="S1"><rect x="200" y="140" width="120" height="20" /></g>
+      <text x="700" y="120" font-size="28" data-display="">220 ms</text>
+      <g><line x1="700" y1="130" x2="640" y2="150" /><text x="700" y="160" font-size="14">This hop dominates the read.</text></g>
+      <rect x="400" y="200" width="200" height="60" fill="url(#vh-hatch)" />
+      <path d="M90 150 H190" marker-end="url(#vh-arrow)" />
+    </svg>
+    <svg class="narrow" data-layout="narrow" viewBox="0 0 300 600" style="max-width:360px"
+         role="img" aria-label="One read traced from the client through the cache to the store.">
+      <g data-node="client"><circle cx="150" cy="60" r="30" /><text x="150" y="110" font-size="14" data-text-kind="node-title">Client</text></g>
+      <text x="150" y="200" font-size="24" data-display="">220 ms</text>
+    </svg>
+  </figure>
+</section>
+<section data-section="2">
+  <h2>Two regions share one store</h2>
+  <p class="vh-lead">Both regions write to the same store.</p>
+  <figure data-figure="regions" data-breakpoint="770">
+    <svg class="wide" data-layout="wide" viewBox="0 0 680 260" style="max-width:714px"
+         role="img" aria-label="Two regions write to one shared store.">
+      <text x="340" y="130" font-size="16" data-text-kind="node-title">Shared store</text>
+    </svg>
+    <svg class="narrow" data-layout="narrow" viewBox="0 0 300 420" style="max-width:360px"
+         role="img" aria-label="Two regions write to one shared store.">
+      <text x="150" y="130" font-size="14" data-text-kind="node-title">Shared store</text>
+    </svg>
+  </figure>
+</section>
+<section data-section="3">
+  <h2>Store layout</h2>
+  <p class="vh-lead">The store keeps one log per region.</p>
+  <figure data-figure="layout">
+    <svg data-layout="single" viewBox="0 0 334 300" style="max-width:350px"
+         role="img" aria-label="The store keeps one log per region.">
+      <text x="167" y="150" font-size="16" data-text-kind="node-title">Region log</text>
+    </svg>
+  </figure>
+</section>
+</body>
+</html>
+"""
+        self.assertEqual(checker.check_html(html, filename="open_forms.html"), [])
+
+    @staticmethod
+    def _breakpoint_figure_page(css: str) -> str:
+        return (
+            """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cascade</title>
+<style>
+figure svg { display: block; width: 100%; height: auto; }
+.narrow { display: none; }
+"""
+            + css
+            + """
+</style>
+</head>
+<body>
+<section>
+  <h2>Two regions share one store</h2>
+  <p class="vh-lead">Both regions write to the same store.</p>
+  <figure data-figure="regions" data-breakpoint="736">
+    <svg class="wide" data-layout="wide" viewBox="0 0 640 260" role="img" aria-label="Two regions write to one store.">
+      <text x="320" y="130" font-size="14">Shared store</text>
+    </svg>
+    <svg class="narrow" data-layout="narrow" viewBox="0 0 330 420" role="img" aria-label="Two regions write to one store.">
+      <text x="165" y="130" font-size="14">Shared store</text>
+    </svg>
+  </figure>
+</section>
+</body>
+</html>
+"""
+        )
+
+    def test_low_css_font_size_overridden_by_winning_wide_rule_passes(self) -> None:
+        low = 'figure[data-breakpoint="736"] svg text { font-size: 12.5px; }'
+        win = 'figure[data-breakpoint="736"] svg.wide text { font-size: 14px; }'
+        for css in (
+            f"{low}\n{win}",
+            f"@media screen and (width < 736px) {{ {low} }}\n{win}",
+            f"{win}\n{low.replace('svg text', 'svg text:where(.x, text)')}",
+        ):
+            with self.subTest(css=css):
+                self.assertEqual(checker.check_html(self._breakpoint_figure_page(css)), [])
+
+    def test_low_css_font_size_without_winning_unconditional_override_fails(self) -> None:
+        low = 'figure[data-breakpoint="736"] svg text { font-size: 12.5px; }'
+        for css in (
+            # The wide rule is less specific, so the low rule wins.
+            f"{low}\nsvg.wide text {{ font-size: 14px; }}",
+            # The wide rule applies only under a media condition.
+            f"{low}\n@media screen and (width >= 736px) {{ figure[data-breakpoint=\"736\"] svg.wide text {{ font-size: 14px; }} }}",
+            # An !important low rule beats a normal override.
+            low.replace("12.5px", "12.5px !important") + '\nfigure[data-breakpoint="736"] svg.wide text { font-size: 14px; }',
+            # A state-dependent override does not hold at rest.
+            f'{low}\nfigure[data-breakpoint="736"] svg.wide text:hover {{ font-size: 14px; }}',
+            # A <noscript> stylesheet applies only with scripting disabled.
+            f'{low}</style><noscript><style>figure[data-breakpoint="736"] svg.wide text {{ font-size: 14px; }}</style></noscript><style>',
+            # The low rule's own match set depends on interaction state.
+            'figure[data-breakpoint="736"] svg text:not(.x:hover) { font-size: 12.5px; }\n'
+            'figure[data-breakpoint="736"] svg.wide text:not(.x:hover) { font-size: 14px; }',
+            # The checker does not evaluate :last-child, so the low rule is not cleared.
+            f"{low.replace('svg text', 'svg text:last-child')}\n"
+            'figure[data-breakpoint="736"] svg.wide text { font-size: 14px; }',
+            'figure[data-breakpoint="736"] svg text:where(:not(:last-child)) { font-size: 12.5px; }\n'
+            'figure[data-breakpoint="736"] svg.wide text { font-size: 14px; }',
+            # A var() font size after the literal override cannot be resolved.
+            f'{low}\nfigure[data-breakpoint="736"] svg.wide text {{ font-size: 14px; font-size: var(--s); }}',
+            # The override is below the wide floor.
+            f'{low}\nfigure[data-breakpoint="736"] svg.wide text {{ font-size: 13px; }}',
+        ):
+            with self.subTest(css=css):
+                failures = checker.check_html(self._breakpoint_figure_page(css))
+                self.assertTrue(failures)
+                self.assertEqual({f.check for f in failures}, {"svg-font-size"}, failures)
+                self.assertTrue(
+                    any("12.5px for a wide/default layout" in f.problem for f in failures),
+                    failures,
+                )
+
+    def test_low_css_font_size_inside_layer_is_never_waived(self) -> None:
+        win = "svg.wide text { font-size: 14px !important; }"
+        for css in (
+            # A layered !important declaration beats an unlayered one in the browser.
+            "@layer labels { svg.wide text { font-size: 12.5px !important; } }\n" + win,
+            # The layer flag holds at any depth.
+            "@layer labels { @media screen { svg.wide text { font-size: 12.5px !important; } } }\n" + win,
+        ):
+            with self.subTest(css=css):
+                failures = checker.check_html(self._breakpoint_figure_page(css))
+                self.assertEqual({f.check for f in failures}, {"svg-font-size"}, failures)
+                self.assertTrue(
+                    any("12.5px for a wide/default layout" in f.problem for f in failures),
+                    failures,
+                )
+                self.assertTrue(any("move it out of @layer" in f.fix for f in failures), failures)
+
     def test_deep_css_nesting_does_not_hit_recursion_error(self) -> None:
         depth = 1500
         deep_css = ("@media all { " * depth) + "svg text { font-size: 12px; }" + (" }" * depth)

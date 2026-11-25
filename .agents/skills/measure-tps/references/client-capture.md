@@ -73,8 +73,6 @@ For an ACP v1 stdio client, send newline-delimited JSON-RPC 2.0 messages. Confir
 
 ## Antigravity
 
-For a Google-supported direct script or CI workflow, use the installed `agy` with the existing allowed sign-in route. On consumer plans, Google supports direct scripting and CI and excludes wrapping `agy` inside third-party coding agents or applications. Use a standalone user-run shell or CI job for that route and analyze its filtered trace. Check the operator's plan before agent-driven collection. [Antigravity FAQ](https://antigravity.google/docs/faq#can-i-use-antigravity-cli-headless-mode-in-third-party-coding-agents-or-automate-account-switching)
-
 List model slugs with `agy models`. Choose a model slug that encodes the requested effort, when available. With a base slug, use the documented `--effort` value and verify the resolved configuration. Match `--expected-model` to the exact client-reported ID when it differs from the selector. [Antigravity headless mode](https://antigravity.google/docs/cli/headless)
 
 ```sh

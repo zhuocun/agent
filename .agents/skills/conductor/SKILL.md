@@ -72,19 +72,19 @@ Prefer one subagent per distinct subtask. Run independent work in parallel rathe
 
 Inspect the dispatch schema and set every exposed parameter on every subagent call, using the source's exact advertised effort token (lowercase `xhigh` on Codex). Never accept the platform default: it can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config. An explicit instruction from the user, or from any source whose instructions outrank this skill, overrides any rule in this section or in `references/dispatch.md`.
 
-**Role line.** A role line names one subagent, advisors included, on one line in this fixed form:
+**Role line.** A role line names one subagent, advisors included. Write it as its own list bullet in this fixed form, with nothing else on the bullet's first line:
 
 ```
-<Role>: <model>[ <effort>][ Fast| Ultrafast][ via <route>][ (<tags>)]
+- <Role>: <model>[ <effort>][ Fast| Ultrafast][ via <route>][ (<tags>)]
 ```
 
 Write role lines to the user in message text at each of these events:
 
 - At each launcher call, write the role line of each subagent the call attempts to start, either as text before the call or in your first message to the user after it. Send that message before the final summary, even if it holds only role lines. Each role line is the whole announcement of its subagent.
-- In each message that reports on a subagent, including a report of its result, a stall or a launch failure, write that subagent's role line, unchanged, before the report on it.
+- In each message that reports on a subagent, including a report of its result, a stall or a launch failure, write that subagent's role line, unchanged, and put the report on that subagent in the same bullet as a separate indented block, such as a nested list or a paragraph after a blank line.
 - In the final summary, under **Delegated agents**, write one role line for each subagent that ran.
 
-A rule on length, detail or internal names does not remove a role line these events require or change its form; only an explicit instruction that overrides this section does. **Reporting** in `references/dispatch.md` defines how to fill each slot.
+A rule on length, detail, layout or internal names does not remove a role line these events require or change its form; only an explicit instruction that overrides this section does. **Reporting** in `references/dispatch.md` defines how to fill each slot.
 
 **Speed modes are off by default.** Only the user's own explicit instruction enables Fast or Ultrafast, for a subagent or for yourself. Never infer it from urgency ("this is urgent", "be quick"), invoking this skill, or a request to add or document a mode. Enabling Fast does not enable Ultrafast.
 
@@ -141,7 +141,7 @@ Before declaring a conductor task done, read in full every reference file this c
 - [ ] Skill precedence honored — while this skill was active, its rules took priority over conflicting rules in other skills; higher-priority system and developer instructions and explicit user overrides were honored, and other skills' nonconflicting rules were applied (see **Role**).
 - [ ] Delegation honored — every non-trivial workstream went to a subagent; nothing was pulled local except genuinely tiny steps, work tightly coupled to the next local action, the immediate blocking step, the orchestrator's own final gate, and work pulled local after two failed reviews or an integration redo (see **Reviewer** and **Orchestrator final gate**).
 - [ ] Concurrency maximized — independent strands ran in parallel, not serialized.
-- [ ] Each role line **Role line** requires was written to the user in message text, in the fixed form: before each launcher call or in the first message to the user after it, before the final summary, as the whole announcement of each subagent the call attempted to start; in each message that reported on a subagent, before the report on it; and under **Delegated agents** in the final summary, for each subagent that ran (see **Model selection**).
+- [ ] Each role line **Role line** requires was written to the user in message text, as its own list bullet in the fixed form: before each launcher call or in the first message to the user after it, before the final summary, as the whole announcement of each subagent the call attempted to start; in each message that reported on a subagent, unchanged, with the report on that subagent as a separate indented block in the same bullet; and under **Delegated agents** in the final summary, for each subagent that ran (see **Model selection**).
 - [ ] Every dispatch, advisors included, met each item of the **Dispatch check** in `references/dispatch.md`.
 - [ ] Every decision that needed the user's consent went straight to the user; every other hard decision went to an advisor wherever one could run, and each consultation met the **Advisor check** in `references/advisor.md`.
 - [ ] Every brief met each obligation of **In every brief**: ownership of quality, verification at the source, and self-review against the brief's scope and constraints before declaring done, added to the reviewer hop; the applicable verification plan and evidence references; a worker's success criteria traced to the DoD items it serves; the leaf restriction unless the brief lifts it; and correctness and reliability wording, with any security check stated as the defect it prevents.

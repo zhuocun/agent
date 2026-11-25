@@ -276,6 +276,13 @@ class CssRule:
     declarations: list[CssDeclaration]
     line: int
     in_reduced_motion: bool = False
+    # True when the rule applies only under a condition: inside an at-rule block
+    # (@media, @supports, @layer, @container) or a <style media="..."> element.
+    conditional: bool = False
+    # True when the rule sits inside an @layer block, at any depth. A layered
+    # !important declaration beats an unlayered one, so the font-floor waiver
+    # never clears a layered declaration.
+    layered: bool = False
 
 
 @dataclass
@@ -773,16 +780,20 @@ def parse_css(
     css: str,
     start_line: int = 1,
     in_reduced_motion: bool = False,
+    conditional: bool = False,
 ) -> CssParseResult:
     """Iteratively parse CSS into rules, handling arbitrary nesting without recursion."""
     result = CssParseResult()
     clean_css = strip_css_comments(css)
 
-    # Explicit stack of frames: (slice_text, index, line, in_reduced_motion)
-    frames: list[tuple[str, int, int, bool]] = [(clean_css, 0, start_line, in_reduced_motion)]
+    # Explicit stack of frames:
+    # (slice_text, index, line, in_reduced_motion, conditional, layered)
+    frames: list[tuple[str, int, int, bool, bool, bool]] = [
+        (clean_css, 0, start_line, in_reduced_motion, conditional, False)
+    ]
 
     while frames:
-        text, i, line, in_rm = frames.pop()
+        text, i, line, in_rm, in_cond, in_layer = frames.pop()
         n = len(text)
 
         while i < n:
@@ -837,8 +848,10 @@ def parse_css(
                         result.has_reduced_motion_block = True
                     # Push remainder of current frame first, then inner block so inner runs next.
                     if next_i < n:
-                        frames.append((text, next_i, next_line, in_rm))
-                    frames.append((inner_css, 0, block_start_line, is_rm))
+                        frames.append((text, next_i, next_line, in_rm, in_cond, in_layer))
+                    frames.append(
+                        (inner_css, 0, block_start_line, is_rm, True, in_layer or at_name == "layer")
+                    )
                     break
 
                 # Skip non-rule at-rule bodies (@keyframes, @font-face, @page, etc.).
@@ -890,6 +903,8 @@ def parse_css(
                 declarations=decls,
                 line=sel_line,
                 in_reduced_motion=in_rm,
+                conditional=in_cond,
+                layered=in_layer,
             )
             result.rules.append(rule)
             if in_rm:
@@ -1261,6 +1276,23 @@ def _compound_matches(
     return True
 
 
+_STATIC_PSEUDO_CLASSES = frozenset({"root", "first-child"})
+
+
+def _state_independent(parsed: ParsedSelector, _depth: int = 0) -> bool:
+    """True when the selector uses only pseudo-classes that selector_matches evaluates
+    (:root, :first-child), so a match holds in every interaction state."""
+    if _depth > _MAX_SELECTOR_DEPTH:
+        return False
+    for comp in parsed.compounds:
+        if any(pc not in _STATIC_PSEUDO_CLASSES for pc in comp.pseudo_classes):
+            return False
+        for group in comp.not_groups + comp.any_groups:
+            if not all(_state_independent(ps, _depth + 1) for ps in group):
+                return False
+    return True
+
+
 def _is_positive_reduced_motion_media(prelude: str) -> bool:
     """Return True if at least one comma-separated @media query positively targets prefers-reduced-motion: reduce."""
     body = re.sub(r"^@media\b", "", prelude, flags=re.IGNORECASE).strip()
@@ -1467,10 +1499,13 @@ class VisualHTMLAnalyzer(HTMLParser):
         self._last_child: dict[int | None, DomNode | None] = {None: None}
         self.all_nodes: list[DomNode] = []
 
-        self._style_blocks: list[tuple[int, list[str]]] = []
+        # (start line, text chunks, conditional: the <style> has a media attribute)
+        self._style_blocks: list[tuple[int, list[str], bool]] = []
         self._in_style = False
         self._in_script = False
         self._template_depth = 0
+        self._noscript_depth = 0
+        self._unresolved_font_size = False
 
         self._figure_counter = 0
         self._figure_stack: list[int] = []
@@ -1815,7 +1850,13 @@ class VisualHTMLAnalyzer(HTMLParser):
         # Track document-wide <style> (including <svg><style>) and HTML containers.
         if tag == "style":
             self._in_style = True
-            self._style_blocks.append((line, []))
+            media = (attr_map.get("media") or "").strip().lower()
+            # A <noscript> stylesheet applies only with scripting disabled.
+            self._style_blocks.append(
+                (line, [], media not in ("", "all") or self._noscript_depth > 0)
+            )
+        elif tag == "noscript":
+            self._noscript_depth += 1
         elif tag == "script" and self._svg_depth == 0:
             self._in_script = True
         elif tag == "template":
@@ -1862,6 +1903,8 @@ class VisualHTMLAnalyzer(HTMLParser):
             self._in_script = False
         elif tag == "template" and self._template_depth > 0:
             self._template_depth -= 1
+        elif tag == "noscript" and self._noscript_depth > 0:
+            self._noscript_depth -= 1
 
         if tag == "svg" and self._svg_depth > 0:
             self._svg_depth -= 1
@@ -2097,6 +2140,95 @@ class VisualHTMLAnalyzer(HTMLParser):
             return layouts
         return ["wide_svg"]
 
+    def _check_svg_font_sizes(
+        self,
+        font_decls: list[tuple[str, ParsedSelector | None, float, CssDeclaration, bool, int, bool]],
+        svg_text_nodes: list[DomNode],
+        diagram_svgs: list[SvgInfo],
+    ) -> None:
+        floors = {"wide_svg": self.config.min_wide_font, "narrow_svg": self.config.min_narrow_font}
+        for sel, parsed, size_px, decl, _conditional, order, layered in font_decls:
+            kinds = self._classify_svg_font_layouts(
+                sel=sel,
+                parsed=parsed,
+                svg_text_nodes=svg_text_nodes,
+                diagram_svgs=diagram_svgs,
+            )
+            for kind in kinds:
+                floor = floors[kind]
+                if size_px + 1e-9 >= floor:
+                    continue
+                if parsed is not None and not layered and not self._unresolved_font_size and self._font_size_overridden(
+                    parsed, decl.important, order, kind, floor, font_decls, svg_text_nodes
+                ):
+                    continue
+                is_narrow = kind == "narrow_svg"
+                layout_label = "narrow" if is_narrow else "wide/default"
+                self._add_failure(
+                    location=f"line {decl.line}, CSS `{sel}` ({decl.name})",
+                    check="svg-font-size",
+                    problem=(
+                        f"CSS selector `{sel}` sets SVG {decl.name} to "
+                        f"{_fmt_num(size_px)}px for a {layout_label} layout, "
+                        f"below the {_fmt_num(floor)}px minimum."
+                    ),
+                    expected=f"SVG font sizes in {layout_label} layouts must be at least {_fmt_num(floor)}px.",
+                    fix=(
+                        f"Increase {decl.name} for `{sel}` to at least {_fmt_num(floor)}px. "
+                        f"If the rule is meant for another layout, scope its selector to that "
+                        f"layout, for example `svg.narrow text`, or "
+                        + (
+                            "move it out of @layer and "
+                            if layered
+                            else ""
+                        )
+                        + f"set this layout's size in a "
+                        f"rule that wins the cascade over it outside any at-rule block "
+                        f"(or adjust --min-{'narrow' if is_narrow else 'wide'}-font if a smaller "
+                        f"floor is intended)."
+                    ),
+                )
+
+    @staticmethod
+    def _font_size_overridden(
+        parsed: ParsedSelector,
+        important: bool,
+        order: int,
+        kind: str,
+        floor: float,
+        font_decls: list[tuple[str, ParsedSelector | None, float, CssDeclaration, bool, int, bool]],
+        svg_text_nodes: list[DomNode],
+    ) -> bool:
+        """True when every node of this layout that the rule sets also gets a font size at or
+        above the floor from an unconditional rule that wins the cascade over it. The caller
+        never asks this for a declaration inside @layer, whose cascade layer this does not model,
+        or when a font size uses var(), whose value this does not resolve."""
+        # The checker models neither the match set nor the specificity of a pseudo-class that
+        # selector_matches does not evaluate, so a rule that uses one is never cleared.
+        if not _state_independent(parsed):
+            return False
+        is_narrow = kind == "narrow_svg"
+        nodes = [
+            node
+            for node in svg_text_nodes
+            if node.svg_owner is not None
+            and node.svg_owner.is_narrow == is_narrow
+            and selector_matches(parsed, node)
+        ]
+        if not nodes:
+            return False
+        low_key = (important, parsed.specificity, order)
+        winners = [
+            o_parsed
+            for _s, o_parsed, o_size, o_decl, o_conditional, o_order, _o_layered in font_decls
+            if o_parsed is not None
+            and not o_conditional
+            and _state_independent(o_parsed)
+            and o_size + 1e-9 >= floor
+            and (o_decl.important, o_parsed.specificity, o_order) > low_key
+        ]
+        return all(any(selector_matches(w, node) for w in winners) for node in nodes)
+
     def _check_stylesheets(self) -> None:
         diagram_svgs = [svg for svg in self.svgs if not svg.is_hidden_defs_only]
         svg_text_nodes = self._svg_text_related_nodes()
@@ -2104,7 +2236,7 @@ class VisualHTMLAnalyzer(HTMLParser):
         all_rules: list[CssRule] = []
         has_rm_block = False
 
-        for start_line, chunks in self._style_blocks:
+        for start_line, chunks, block_conditional in self._style_blocks:
             css = "".join(chunks)
             if not self.config.allow_external_assets:
                 for css_line, kind, url in extract_css_external_urls(css, start_line):
@@ -2116,7 +2248,7 @@ class VisualHTMLAnalyzer(HTMLParser):
                         fix="Remove the external CSS resource or inline it with a data: URI, or pass --allow-external-assets if external assets are intentionally required.",
                     )
 
-            parsed_css = parse_css(css, start_line=start_line)
+            parsed_css = parse_css(css, start_line=start_line, conditional=block_conditional)
             if parsed_css.has_reduced_motion_block:
                 has_rm_block = True
             all_rules.extend(parsed_css.rules)
@@ -2138,6 +2270,11 @@ class VisualHTMLAnalyzer(HTMLParser):
             if sel not in selector_cache:
                 selector_cache[sel] = parse_selector(sel)
             return selector_cache[sel]
+
+        # Font-size entries: (raw_sel, parsed_sel, size_px, decl, conditional, order, layered)
+        font_decls: list[
+            tuple[str, ParsedSelector | None, float, CssDeclaration, bool, int, bool]
+        ] = []
 
         decl_order = 0
         for rule in all_rules:
@@ -2199,43 +2336,24 @@ class VisualHTMLAnalyzer(HTMLParser):
                                     (sel, get_parsed(sel), decl.important, decl_order, decl.line)
                                 )
 
-            # SVG font-size floor check across all rules (document-wide scope).
+            # Collect font sizes for the SVG font-size floor check (document-wide scope).
             for decl in rule.declarations:
                 if decl.name not in ("font-size", "font"):
                     continue
                 size_px = extract_font_size_px(decl.name, decl.value, allow_unitless=False)
                 if size_px is None:
+                    if "var(" in decl.value.lower():
+                        self._unresolved_font_size = True
                     continue
                 for sel in rule.selectors:
-                    kinds = self._classify_svg_font_layouts(
-                        sel=sel,
-                        parsed=get_parsed(sel),
-                        svg_text_nodes=svg_text_nodes,
-                        diagram_svgs=diagram_svgs,
-                    )
-                    for kind in kinds:
-                        is_narrow = kind == "narrow_svg"
-                        floor = (
-                            self.config.min_narrow_font
-                            if is_narrow
-                            else self.config.min_wide_font
+                    font_decls.append(
+                        (
+                            sel, get_parsed(sel), size_px, decl, rule.conditional,
+                            len(font_decls), rule.layered,
                         )
-                        layout_label = "narrow" if is_narrow else "wide/default"
-                        if size_px + 1e-9 < floor:
-                            self._add_failure(
-                                location=f"line {decl.line}, CSS `{sel}` ({decl.name})",
-                                check="svg-font-size",
-                                problem=(
-                                    f"CSS selector `{sel}` sets SVG {decl.name} to "
-                                    f"{_fmt_num(size_px)}px for a {layout_label} layout, "
-                                    f"below the {_fmt_num(floor)}px minimum."
-                                ),
-                                expected=f"SVG font sizes in {layout_label} layouts must be at least {_fmt_num(floor)}px.",
-                                fix=(
-                                    f"Increase {decl.name} for `{sel}` to at least {_fmt_num(floor)}px "
-                                    f"(or adjust --min-{'narrow' if is_narrow else 'wide'}-font if a smaller floor is intended)."
-                                ),
-                            )
+                    )
+
+        self._check_svg_font_sizes(font_decls, svg_text_nodes, diagram_svgs)
 
         self._check_reduced_motion(
             has_rm_block=has_rm_block,

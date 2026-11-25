@@ -23,16 +23,18 @@ build_page.py
   THEME, LAYOUTS            color tokens; wide, narrow and single type and spacing
   text_width, wrap, box     measurement
   node, container, edge     primitives shared by every figure
-  badge, legend_item
+  label, scale_mark, annotation, badge, legend_item
   fig_<name>(layout)        one builder per figure, called once per layout
   legend(), page()          page assembly
   main()                    parse --out, write the file
 ```
 
 - Let each figure builder take a layout object (`LAYOUTS["wide"]`,
-  `LAYOUTS["narrow"]` or, for a single-layout figure, `LAYOUTS["single"]`,
-  which uses the wide type sizes) and return one SVG string. The layouts share
-  the data and the primitives and differ only in positions and layout tokens.
+  `LAYOUTS["narrow"]` or, for a single-layout figure, `LAYOUTS["single"]`) and
+  return one SVG string. The layouts share the data and the primitives and
+  differ only in positions and layout tokens. The starting-point type sizes
+  of each layout, the single layout included, are in
+  [Typography](visual-system.md#typography).
 - Read every size, gap and padding from the layout object. Never write a font
   size as a literal inside a builder.
 - Write each SVG text size as a unitless `font-size` attribute on its `<text>`
@@ -86,6 +88,11 @@ STATUSES = ("verified", "inferred", "planned", "proposed", "estimated", "placeho
 - Make the generator raise an error when a fact has an unknown status, when a
   fact other than a placeholder has no source, or when a fact names a source
   that `SOURCES` lacks.
+- Give a fact that a mark draws to scale a numeric quantity taken from its
+  source, for example `"value": 220, "unit": "ms"`; a sourced count, ratio or
+  existing typed field serves as well. Make the generator raise an error when a
+  mark drawn to scale reads a fact that is a placeholder, has no source or has
+  no numeric quantity.
 - Render a placeholder with the placeholder style and badge, and never with an
   invented value.
 - Build the source list section from `SOURCES`, in order, and link each fact's
@@ -94,7 +101,9 @@ STATUSES = ("verified", "inferred", "planned", "proposed", "estimated", "placeho
 ## Text width estimation
 
 Estimate the rendered width of a label before sizing its box. This estimate
-assumes a system sans-serif font and adds an 8% safety margin. Pass
+assumes a system sans-serif font and adds an 8% safety margin, so measure text
+set in any other font, such as a serif display voice, in the browser before
+sizing its box. Pass
 `cjk_context=True` on a CJK page, where East Asian ambiguous-width characters
 such as `“` and `·` render full width.
 
@@ -198,39 +207,58 @@ def box(lines, size, pad_x, pad_y, line_height, weight=400, cjk_context=False, m
 
 - Size the box from the wrapped lines, so that hanging punctuation widens the
   box instead of overflowing it. An empty label gives a box of padding only.
-- When a label wraps to more than two lines, first widen the box up to the
-  layout's maximum node width, then shorten the label or split the concept.
-  Never reduce the font size below the layout floor.
-- Give nodes in one row or column one shared width or height when their
-  sizes differ by less than about 20%, so that the grid reads as aligned.
+- **Starting point:** when a label wraps to more lines than the label budget in
+  [Figure budgets and splitting](visual-system.md#figure-budgets-and-splitting),
+  widen its box up to the layout's maximum node width, then shorten the label
+  or split the concept.
+- Never reduce a font size below the layout floor to make a label fit.
+- **Starting point:** give nodes in one row or column one shared width or
+  height when their sizes differ by less than about 20%, so that the grid
+  reads as aligned.
 - Place each line with an explicit baseline instead of `dominant-baseline`,
   which renderers treat differently. For `n` lines centered on `cy` with line
   pitch `lh = size * line_height`, line `i` has its baseline at
-  `cy + (i - (n - 1) / 2) * lh + 0.35 * size`. Use `text-anchor="middle"`
-  with the box center as `x`.
+  `cy + (i - (n - 1) / 2) * lh + 0.35 * size`.
+- **Starting point:** center a label in its box with `text-anchor="middle"`
+  and the box center as `x`. For start-aligned lines, use
+  `text-anchor="start"` with the box's inner start edge as `x`.
 
 ## SVG primitives
 
-Write each primitive once and call it from every figure and from the legend:
+Write each primitive once, and call it wherever a figure or the legend needs
+its mark.
+
+**Starting point:** this vocabulary. The first three rows draw structure; the
+next three draw a label whose position carries the meaning, a quantity to
+scale, and an annotation. Add a primitive whenever a figure's form needs one,
+such as a part of a schematic or one step of a traced instance:
 
 | Primitive | Inputs | Output |
 | --- | --- | --- |
-| `node` | id, x, y, label lines, role, status, layout | `<g data-node>` with a rect and centered text |
+| `node` | id, x, y, label lines, role, status, shape, layout | `<g data-node>` with a shape, a rect as the starting point, and its text |
 | `container` | id, box, label, layout | `<g data-node>` with a rect and a label inside the top edge |
-| `edge` | from, to, points, kind, label, layout | `<g data-edge>` with an orthogonal path, marker and label |
+| `edge` | from, to, points, kind, label, layout | `<g data-edge>` with a path, marker and label |
+| `label` | id, x, y, text, anchor, layout | `<g data-node>` with text and no shape |
+| `scale_mark` | fact id, scale, x, y, layout | `<g data-node data-source>` with a bar, dot or tick, and no text, whose length or position is the fact's quantity times the figure's scale; a separate `label` shows the value |
+| `annotation` | target point, text, x, y, layout | `<g>` with one short sentence of text and a leader line from it to the target mark |
 | `badge` | text, status, x, y, layout | `<g data-status>` with a pill and its text |
 | `legend_item` | sample primitive call, label | the sample glyph and its label |
 
-- Map each role and status to one style class from the grammar table, and set
+- Give each primitive's `<g>` the hooks in
+  [Semantic data hooks](#semantic-data-hooks) for what it shows: `data-node`
+  for a concept, a part or a step of an instance, `data-edge` for a relation,
+  `data-status` for a status, and `data-source` for a sourced fact. An
+  annotation needs only `data-source`, when it states a fact.
+- Map each role and status to one style class from the grammar, and set
   colors through CSS classes that read the theme tokens, so that dark mode and
   print switch them in one place.
-- Draw text as real `<text>` elements, never as paths or images, so that it
-  stays selectable, searchable and measurable.
-- Do not use `<foreignObject>`. HTML inside SVG escapes the width estimate and
-  renders unreliably in PNG exporters and embed hosts.
-- Build an edge's path from its points with straight segments and rounded
-  corners, and place its label at the midpoint of its longest segment on a
-  `--paper` background rect.
+- **Maximum readability** in `SKILL.md` requires real `<text>` elements,
+  never paths or images, because real text stays selectable, searchable and
+  measurable. It bans `<foreignObject>` because HTML inside SVG escapes the
+  width estimate and renders unreliably in PNG exporters and embed hosts.
+- **Starting point:** build an edge's path from its points with straight
+  segments and rounded corners, and place its label, on its plate, at the
+  midpoint of its longest segment.
 
 ## Shared defs and IDs
 
@@ -269,8 +297,12 @@ the first figure:
 ## Figure markup and aria-label text
 
 Use this markup for each section and two-layout figure. A single-layout
-figure holds one `<svg data-layout="single" role="img" aria-label="...">`
-instead of the two layouts:
+figure holds one `<svg data-layout="single" style="max-width:…px" role="img"
+aria-label="...">` instead of the two layouts. In this markup each figure SVG
+carries the starting-point scale cap from
+[Two-layout breakpoints and reflow](visual-system.md#two-layout-breakpoints-and-reflow)
+as an inline `max-width`. The lead sentence of each section carries the class
+`vh-lead`, which `verify.mjs` reads to check the lead-size limit:
 
 ```html
 <section class="vh-section" id="s2" data-section="2">
@@ -278,9 +310,9 @@ instead of the two layouts:
   <h2>Request path</h2>
   <p class="vh-lead">Every request passes the gateway before a service sees it.</p>
   <figure class="vh-figure" data-figure="request-path">
-    <svg class="wide" data-layout="wide" viewBox="0 0 960 420"
+    <svg class="wide" data-layout="wide" viewBox="0 0 960 420" style="max-width:1008px"
          role="img" aria-label="...">...</svg>
-    <svg class="narrow" data-layout="narrow" viewBox="0 0 330 780"
+    <svg class="narrow" data-layout="narrow" viewBox="0 0 300 780" style="max-width:360px"
          role="img" aria-label="...">...</svg>
   </figure>
 </section>
@@ -309,16 +341,25 @@ by meaning instead of by position:
 | --- | --- | --- |
 | `data-section` | `<section>` | section number |
 | `data-figure` | `<figure>` | figure id, stable across edits |
+| `data-breakpoint` | `<figure>` whose breakpoint differs from the page breakpoint | that breakpoint width in whole CSS px |
 | `data-layout` | figure `<svg>` | `wide`, `narrow` or `single` |
-| `data-node` | node and container `<g>` | node id, the same in both layouts |
+| `data-node` | node, container, label and scale-mark `<g>` | node id, the same in both layouts |
 | `data-edge` | edge `<g>` | `from-id:to-id` |
 | `data-status` | node, edge or badge `<g>` | one value from `STATUSES` |
 | `data-term` | element whose label is a glossary term | term id |
 | `data-source` | element that shows a fact | source id |
+| `data-display` | the `<text>` element of a display text: a key number or a figure title | no value |
+| `data-text-kind` | every other `<text>` element in a figure SVG | its kind of text, such as `node-title`, the same in every figure |
 
 - Keep hook names and ids stable once a verification script uses them.
-- Use `data-node` in pass 4 to check that each label fits its rect, and use
-  `data-status`, `data-term` and `data-source` during visual and fact-table
-  audits to check status marks, identical text across elements sharing the same
-  `data-term` value (ignoring whitespace from line wraps), and source
-  traceability.
+- Use `data-node` in pass 4 to check that each label fits its shape. The probe
+  checks this only against a `rect` that is a direct child of the `data-node`
+  group. It does not check a label against another shape or a primitive with
+  no shape, such as a `label`, a `scale_mark`, an `annotation` or a node with
+  a circle; check those labels in the screenshots. The probe still checks
+  every label's size, visibility, containment in its SVG and overlap with
+  other labels.
+- Use `data-status`, `data-term` and `data-source` during visual and
+  fact-table audits to check status marks, identical text across elements
+  sharing the same `data-term` value (ignoring whitespace from line wraps), and
+  source traceability.

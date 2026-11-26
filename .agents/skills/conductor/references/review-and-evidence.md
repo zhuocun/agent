@@ -10,8 +10,7 @@ Read this file in full before dispatching the first reviewer or verifier and bef
 
 **Reviewer input** — the handoff is exactly this:
 
-- the exact brief the worker received
-- the worker's final artifact (diff for code; write-up for research)
+- the exact brief the worker received and the worker's final artifact (diff for code; write-up for research), or, for a review, verification or audit of existing work with no worker brief, the current request and the exact artifact under review
 - the surrounding files needed for context
 - the applicable verification plan and raw-evidence references, with the provenance and scope **Evidence reuse** requires, plus failed or uncovered checks
 

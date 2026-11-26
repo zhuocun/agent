@@ -70,7 +70,7 @@ Prefer one subagent per distinct subtask. Run independent work in parallel rathe
 
 `references/dispatch.md` decides each dispatch's source, route, workspace, model, effort and speed request. Apply the guards in `references/cli-dispatch.md` to every CLI dispatch.
 
-Inspect the dispatch schema and set every exposed parameter on every subagent call, using the source's exact advertised effort token (lowercase `xhigh` on Codex). Never accept the platform default: it can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config. An explicit instruction from the user, or from any source whose instructions outrank this skill, overrides any rule in this section or in `references/dispatch.md`.
+Inspect the dispatch schema. Set every exposed parameter explicitly on every subagent call, except effort when **Selecting who runs a role** in `references/dispatch.md` accepts its platform default, because a platform default can route to a forbidden tier, silently downgrade reasoning, or mirror the orchestrator's own config. When setting effort, use the source's exact advertised token, such as lowercase `xhigh` on Codex. An explicit instruction from the user, or from any source whose instructions outrank this skill, overrides any rule in this section or in `references/dispatch.md`.
 
 **Role line.** A role line names one subagent, advisors included. Write it as its own list bullet in this fixed form, with nothing else on the bullet's first line:
 
@@ -90,7 +90,7 @@ A rule on length, detail, layout or internal names does not remove a role line t
 
 ## Reviewer
 
-After each worker returns, dispatch its output to fresh reviewer subagents before integrating: one reviewer, or the pair that **Task types** in `references/dispatch.md` requires, whose verdicts combine as rule 8 of **Task types** directs. Reviewers run in parallel across multiple worker outputs.
+After each worker returns, dispatch its output to fresh reviewer subagents before integrating: one reviewer, or the pair that **Review routing and verdicts** in `references/dispatch.md` requires, whose verdicts combine as **Pair verdicts** there directs. Reviewers run in parallel across multiple worker outputs.
 
 `references/review-and-evidence.md` defines a verifier and the reviewer's input, output and grounding.
 
@@ -142,10 +142,10 @@ Before declaring a conductor task done, read in full every reference file this c
 - [ ] Delegation honored — every non-trivial workstream went to a subagent; nothing was pulled local except genuinely tiny steps, work tightly coupled to the next local action, the immediate blocking step, the orchestrator's own final gate, and work pulled local after two failed reviews or an integration redo (see **Reviewer** and **Orchestrator final gate**).
 - [ ] Concurrency maximized — independent strands ran in parallel, not serialized.
 - [ ] Each role line **Role line** requires was written to the user in message text, as its own list bullet in the fixed form: before each launcher call or in the first message to the user after it, before the final summary, as the whole announcement of each subagent the call attempted to start; in each message that reported on a subagent, unchanged, with the report on that subagent as a separate indented block in the same bullet; and under **Delegated agents** in the final summary, for each subagent that ran (see **Model selection**).
-- [ ] Every dispatch, advisors included, met each item of the **Dispatch check** in `references/dispatch.md`.
+- [ ] Each item of the **Dispatch check** in `references/dispatch.md` held.
 - [ ] Every decision that needed the user's consent went straight to the user; every other hard decision went to an advisor wherever one could run, and each consultation met the **Advisor check** in `references/advisor.md`.
 - [ ] Every brief met each obligation of **In every brief**: ownership of quality, verification at the source, and self-review against the brief's scope and constraints before declaring done, added to the reviewer hop; the applicable verification plan and evidence references; a worker's success criteria traced to the DoD items it serves; the leaf restriction unless the brief lifts it; and correctness and reliability wording, with any security check stated as the defect it prevents.
-- [ ] Every worker artifact, except a pure fact lookup or a mechanical summary you verified at the source in seconds, got a verdict from every independent reviewer **Reviewer** requires before integration, and was integrated only when each verdict was a `pass` you accepted or a `revise`/`redo` you rejected.
+- [ ] Every worker artifact, except a pure fact lookup or a mechanical summary you verified at the source in seconds, was integrated only when every reviewer position **Reviewer** requires held a `pass` you accepted or a `revise`/`redo` you rejected, with a pair decided under **Pair verdicts** in `references/dispatch.md`.
 - [ ] No subtask was reviewed again after its second failed review: it was pulled local or escalated to the user.
 - [ ] Verification followed the claim and risk plan in the DoD or checklist — evidence reuse passed the **Evidence reuse** checks in `references/review-and-evidence.md`, required independent execution ran, and further checks addressed iteration, coverage, invalidation or unresolved results (see **Verification**).
 - [ ] Orchestrator final gate ran — each subtask checked against its goal, cross-subtask conflicts reconciled, every DoD obligation supported for the final integrated candidate, and the orchestrator personally inspected the evidence and completed its assigned and missing checks.

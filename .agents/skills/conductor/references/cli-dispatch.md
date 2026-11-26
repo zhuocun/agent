@@ -56,17 +56,18 @@ assignment into a different shell unchanged.
   host settings reach a remote child. Reuse existing or already-authorized setup.
   Examples do not imply authorization for new login, proxy or persistent settings
   setup, and do not require such changes.
-- **Model and effort**: pass them on every dispatch, using the newest required
-  family in the source's current model list. Never rely on defaults, a router
-  such as Cursor Auto or Devin `adaptive`, or a Devin `fusion` lead/sidekick
-  pairing. Use an alias only when its verified mapping selects the required
-  version and tier; a bare family or partial name such as `gpt` does not
-  guarantee tier, effort or speed. Spell effort exactly and check the selected
-  model's support. When the assigned level is missing, use the highest supported
-  level below it, as **Effort limits** in `dispatch.md` requires. If a delegated
-  role's ID is rejected, select the next-newest eligible listed ID of the same
-  model line; for an advisor, follow **Advisor model** in `advisor.md`; never
-  let the CLI choose its default.
+- **Model and effort**: pass the version that **Selecting who runs a role** in
+  `dispatch.md` selects, and set effort as that procedure directs, using an
+  effort control only when it sets effort. This rule governs the invocation,
+  model, effort and speed instructions in each source's section of this file:
+  the version they name is this selected version. Use an alias only when its
+  verified mapping selects the required version and tier. Use neither a bare
+  family or partial name such as `gpt`, a router such as Cursor Auto or Devin
+  `adaptive`, nor a Devin `fusion` lead/sidekick pairing. If the CLI rejects a
+  delegated role's model ID, exclude that ID for this dispatch and apply steps
+  5–7 of that procedure again on the same CLI, which selects the next-newest
+  eligible listed ID of the same model line. For an advisor dispatch that
+  fails at run time, follow **Advisor model** in `advisor.md`.
 - **Speed**: apply **Speed modes** in `dispatch.md` to select Standard, Fast or
   Ultrafast from the user's explicit scope and current source support. A Fast
   control does not establish Ultrafast support. Saved settings and defaults can
@@ -90,9 +91,10 @@ assignment into a different shell unchanged.
   authorized access; use a bypass mode only in an isolated runner. If required
   isolation or tools are unavailable, use another authorized source or runtime
   rather than removing protection.
-- **Reviewers running code**: give a reviewer or verifier its own disposable
-  `git worktree` or artifact copy and the access needed for tests, builds or
-  reproductions. Where supported and authorized, use Codex workspace-write with
+- **Reviewers running code**: give a reviewer or verifier that runs code its
+  own disposable `git worktree` or artifact copy, holding the exact artifact
+  under review, uncommitted changes included, and the access needed for tests,
+  builds or reproductions. Where supported and authorized, use Codex workspace-write with
   required network access, Cursor allow rules or force, or Claude acceptEdits
   plus shell allow rules. Verify the host's effective enforcement. The brief
   prohibits editing the deliverable; never grant write access to the shared tree.
@@ -136,9 +138,10 @@ supported `CLAUDE_CONFIG_DIR` override rather than assuming a home location.
   `claude -p "<instruction>" < brief.md`; piped stdin adds input beside the
   argument. Keep the prompt before multi-value tool flags.
 - **Model**: `opus` selects the Opus version recommended by the installed build,
-  subject to environment overrides and restrictions. Verify it is the newest
-  version of the top-tier line **Tiers.** in `dispatch.md` defines; otherwise pin the
-  full supported ID from `/model` or the model configuration reference.
+  subject to environment overrides and restrictions. Verify that it resolves to
+  the selected version of the top-tier line **Tiers.** in `dispatch.md` defines;
+  otherwise pin the full supported ID from `/model` or the model configuration
+  reference.
   `ANTHROPIC_DEFAULT_OPUS_MODEL` repoints the alias; cloud providers can map it
   differently, so pin their full ID for that line. Do not use `best`,
   `default`, `opusplan`, `sonnet`, `haiku`, `fable` or any other alias or ID
@@ -229,16 +232,17 @@ before relying on a sandbox mode.
   other assignment flags. Outside a Git repository, pass
   `--skip-git-repo-check`.
 - **Model**: always pass `-m` because omission uses effective configuration and
-  built-in defaults. Pin the newest full ID of the top-tier line **Tiers.**
-  in `dispatch.md` defines, from the current launcher, interactive `/model` picker or
-  fresh applicable account catalog; no family alias is documented.
+  built-in defaults. Pin the full ID of the selected version of the top-tier
+  line **Tiers.** in `dispatch.md` defines, from the current launcher,
+  interactive `/model` picker or fresh applicable account catalog; no family
+  alias is documented.
   `codex debug models --bundled` and the documentation's Models page describe
   capabilities, not account access. Never pick Astra, Luna, `-mini` or any
   other model **Tiers.** in `dispatch.md` forbids. A failed fetch or bundled fallback does not
   prove account unavailability; only a successful applicable catalog lacking
   that line establishes that the family is absent.
-- **Effort**: explicitly set the assigned supported level with
-  `-c model_reasoning_effort=<level>`; there is no dedicated effort flag, and
+- **Effort**: when setting effort, use `-c model_reasoning_effort=<level>`;
+  there is no dedicated effort flag, and
   `--strict-config` makes a misspelled key fail instead of being ignored. Check
   the effort levels available for the selected model and client in `/model` or
   the catalog, and copy the exact token, such as lowercase `xhigh`. Do not raise
@@ -246,8 +250,8 @@ before relying on a sandbox mode.
   reasoning depth within one task; Ultra uses maximum reasoning and can
   delegate suitable work to subagents in supported Codex and ChatGPT clients.
   Verify the effective effort: configuration acceptance alone does not prove
-  backend support or clamping. Do not invent levels, assume unsupported-level
-  behavior or rely on defaults, which can be as low as `low`.
+  backend support or clamping. Do not invent levels or assume unsupported-level
+  behavior. An omitted effort takes a default, which can be as low as `low`.
 - **Auth**: `codex login status` returns 0 when saved credentials are present.
   Exec reuses them; `CODEX_API_KEY=<key> codex exec ...` supplies an API key for
   one run. Apply the common availability check to the selected credential route.
@@ -309,16 +313,16 @@ to discover active global and project settings, including supported
   name `cursor-agent`; identify a generic `agent` binary from its product help
   or version output before using Cursor commands. Prompt stdin is undocumented,
   so use an argument and close stdin.
-- **Model**: copy the newest required variant from `agent models` or
-  `agent --list-models` and pass `--model` every time; fresh installs default to
+- **Model**: copy the exact listed variant of the selected version from
+  `agent models` or `agent --list-models` and pass `--model` every time; fresh installs default to
   Auto. Builds that match exact catalog variants reject unmatched IDs with
   `Cannot use this model` and reject admin-blocked models rather than using
   the native subagent documentation's fallback behavior. A saved config model
   can be replaced by an allowed model, so explicit selection matters. Check
   the init event's display name against the requested family/version, then
   check serving evidence as its **Output and verification** describes.
-- **Effort**: select an exact listed effort variant when the CLI exposes no
-  separate effort flag; its ID carries effort and Max Mode. Some help versions
+- **Effort**: when setting effort without a separate effort flag, select an
+  exact listed effort variant; its ID carries effort and Max Mode. Some help versions
   advertise bracket parameters for context, effort and Fast. In builds that
   match the whole string to catalog variants, help syntax does not establish
   arbitrary bracket parsing. Do not compose an assumed variant: catalog strings
@@ -376,12 +380,13 @@ a new account or build.
   useful completion. `--` separates the prompt from subcommands. For a long
   brief, use `--prompt-file <file>`. Prompt stdin is undocumented.
 - **Model and effort**: fetch `devin models list --format json` with the planned
-  account and copy the full UID for the newest required model and assigned
-  effort. `--model` also accepts loose aliases, family slugs and partial names;
-  do not use them. A family alias resolves to that family's latest version but
-  leaves effort/speed ambiguous. Effort is encoded in the UID; no dedicated
-  effort flag, environment variable or config key is exposed. Select a listed
-  supported effort, never synthesize `<model>-<level>` from naming patterns.
+  account and copy the full UID for the selected version. `--model` also accepts
+  loose aliases, family slugs and partial names; do not use them. A family alias
+  resolves to that family's latest version but leaves effort/speed ambiguous.
+  Effort is encoded in the UID; no dedicated effort flag, environment variable
+  or config key is exposed. When setting effort, select the exact listed UID
+  that carries that level; never synthesize `<model>-<level>` from naming
+  patterns.
   Interactive `Alt+T`, `/model` and `/fusion` controls do not set headless effort.
   Never use the `adaptive` router or a `fusion` lead/sidekick pairing.
 - **Defaults and resume**: pass the exact UID on new runs and resumes.
@@ -408,8 +413,9 @@ a new account or build.
   start, the CLI refuses to run, so treat that runner as unavailable.
   Organization deny/ask rules apply in every mode, including dangerous; set a
   timeout and treat a stall as failure.
-- **Fast selection**: choose the exact catalog variant labelled Fast for the
-  assigned model and effort, and its exact standard counterpart outside scope.
+- **Fast selection**: for a Fast request, choose the exact catalog variant
+  labelled Fast of the UID that Devin's **Model and effort** selects, and for
+  Standard its exact standard counterpart.
   There is no dedicated Fast flag/environment/config key. Suffixes are not the
   contract: a catalog can label either a `-fast` or `-priority` variant Fast.
   Copy the current catalog's exact UID and label instead of deriving or rejecting
@@ -453,8 +459,8 @@ saving it.
   command or skill expansion. `--print-timeout` defaults to `0s` (no limit).
 - **Model**: query the live catalog with `agy models` or
   `agy --output-format json models` (global `--output-format` must precede the
-  `models` subcommand) and select the newest required model matching **Tiers.**
-  in `dispatch.md`. Always pass `--model` explicitly so saved `settings.json`
+  `models` subcommand) and find the selected version there, which matches
+  **Tiers.** in `dispatch.md`. Always pass `--model` explicitly so saved `settings.json`
   defaults do not apply; an unknown model exits 1 rather than falling back.
   For subscription sign-in, Google's top-tier line (Gemini 4 Neon today) is
   available on eligible Google AI Pro plans, Google AI Ultra and Gemini
@@ -472,8 +478,7 @@ saving it.
   consultation.
 - **Effort**: `agy` accepts a suffixed catalog slug (`--model <model>-<level>`),
   a base slug with `--effort <low|medium|high|xhigh|max>`, or matching slug and
-  `--effort`; a base slug without `--effort` uses the model's default level, so
-  always specify effort explicitly. A conflicting suffix and `--effort`, or an
+  `--effort`; a base slug without `--effort` uses the model's default level. A conflicting suffix and `--effort`, or an
   effort level the selected model does not publish (check `agy models` — some
   models cap below `xhigh`/`max`), exits 1 at startup. `--effort` applies to the
   current session only and is never saved.

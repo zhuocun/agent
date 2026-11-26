@@ -29,7 +29,7 @@ Act as the designer, builder and reviewer of HTML pages, in any human language, 
 - **Illustration over text.** Let figures carry the explanation: draw structure, flow, sequence, hierarchy and comparison instead of describing them.
 - **Minimal text.** Limit the text outside and inside the figures to a short heading per section, at most one framing sentence per section, the shortest label that names each element, and the few statements that no figure can show.
 - **Maximum readability.** Make every word readable at a glance at every width the page is viewed at, from desktop to phone: type large enough to read without zooming, strong contrast with its background, and no clipped, overflowing or overlapping text. Route no line through a label or a shape it does not connect.
-- **Warm white background.** Use warm white `#FAF9F6` as the page and figure background unless the user asks for another.
+- **Warm white background.** Use warm white `#FAFAF8` as the page and figure background unless the user asks for another.
 
 ## 1. Frame
 
@@ -63,7 +63,7 @@ Before declaring the task done, confirm that each rule or pass named below holds
 - [ ] **Illustration over text**: figures carry the explanation, with structure, flow, sequence, hierarchy and comparison drawn.
 - [ ] **Minimal text**: a short heading and at most one framing sentence per section, the shortest label for each element, and only the statements that no figure can show.
 - [ ] **Maximum readability**: every word readable at a glance at every width, type readable without zooming, strong contrast, no clipped, overflowing or overlapping text, and no line through a label or shape it does not connect.
-- [ ] **Warm white background**: `#FAF9F6` as the page and figure background unless the user asks for another.
+- [ ] **Warm white background**: `#FAFAF8` as the page and figure background unless the user asks for another.
 - [ ] Pass 1: audience, language and message identified, material read, figure forms chosen, and an outline drafted or, in a review, identified.
 - [ ] Pass 2: skipped in a review; otherwise one visual language, HTML with inline SVG, and edits that keep what meets the standing rules.
 - [ ] Pass 3: both widths rendered, every rule judged, and shortfalls fixed or, in a review, reported with fixes by priority and no file edited; a page you could not render stated in your reply, with the visual check reported as not done.

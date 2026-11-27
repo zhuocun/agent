@@ -9,7 +9,7 @@ import type { Page } from "@playwright/test";
 
 import { expect, test } from "./coverage-fixture";
 
-import { BE_URL, modelModeTrigger, waitForBootstrap } from "./helpers";
+import { BE_URL, modelModeTrigger, toolsTrigger, waitForBootstrap } from "./helpers";
 
 async function axeViolations(page: Page, rules: string[]) {
   const res = await new AxeBuilder({ page }).withRules(rules).analyze();
@@ -69,27 +69,39 @@ test.describe("desktop", () => {
     await expect(page.locator(`[id="${last}"]`)).toBeInViewport({ ratio: 1 });
   });
 
-  test("model picker: Advanced is a menu item reachable by arrow keys", async ({
+  test("model menu holds tiers and reasoning; tools toggles are menu checkboxes", async ({
     page,
   }) => {
     await page.goto("/");
     await waitForBootstrap(page);
     await modelModeTrigger(page).focus();
     await page.keyboard.press("Enter");
-    const menu = page.getByRole("menu");
-    await expect(menu).toBeVisible();
+    const modelMenu = page.getByTestId("model-menu");
+    await expect(modelMenu).toBeVisible();
+    await expect(modelMenu.getByText("Reasoning effort", { exact: true })).toBeVisible();
+    await expect(modelMenu.getByText("Extended", { exact: true })).toBeVisible();
+    await expect(modelMenu.getByTestId("web-search-toggle")).toHaveCount(0);
+    await expect(modelMenu.getByTestId("json-mode-toggle")).toHaveCount(0);
+    await expect(modelMenu.getByTestId("picker-advanced")).toHaveCount(0);
+    await expect(modelMenu.getByText("Provider", { exact: true })).toHaveCount(0);
+    await expect(modelMenu.getByText("Data policy", { exact: false })).toHaveCount(0);
     expect(await axeViolations(page, ["aria-required-children"])).toEqual([]);
+    await page.keyboard.press("Escape");
 
-    const advanced = menu.getByTestId("picker-advanced");
-    await expect(advanced).toHaveAttribute("role", "menuitem");
-    await expect(advanced).toHaveAttribute("aria-expanded", "false");
-    // Arrow keys walk the menu's roving focus; the End key lands on the last
-    // item, which is Advanced while the section is collapsed.
-    await page.keyboard.press("End");
-    await expect(advanced).toBeFocused();
+    await toolsTrigger(page).focus();
     await page.keyboard.press("Enter");
-    await expect(advanced).toHaveAttribute("aria-expanded", "true");
-    await expect(menu).toBeVisible();
+    const toolsMenu = page.getByTestId("tools-menu");
+    await expect(toolsMenu).toBeVisible();
+    await expect(toolsMenu.getByText("Provider", { exact: true })).toHaveCount(0);
+    await expect(toolsMenu.getByText("Reasoning effort", { exact: true })).toHaveCount(0);
+    await expect(toolsMenu.getByText("Data policy", { exact: false })).toHaveCount(0);
+    const json = toolsMenu.getByTestId("json-mode-toggle");
+    await expect(json).toHaveAttribute("role", "menuitemcheckbox");
+    // End lands on the last item in the menu's roving focus.
+    await page.keyboard.press("End");
+    await expect(
+      toolsMenu.locator('[role="menuitem"], [role="menuitemcheckbox"]').last(),
+    ).toBeFocused();
     expect(await axeViolations(page, ["aria-required-children"])).toEqual([]);
   });
 
@@ -250,13 +262,19 @@ test.describe("mobile sheet", () => {
     isMobile: true,
   });
 
-  test("model sheet toggles are single switches named by their label", async ({
+  test("tools sheet toggles are single switches named by their label", async ({
     page,
   }) => {
     await page.goto("/");
     await waitForBootstrap(page);
     await modelModeTrigger(page).click();
-    const sheet = page.getByRole("dialog", { name: "Model and reasoning" });
+    const modelSheet = page.getByRole("dialog", { name: "Model" });
+    await expect(modelSheet).toBeVisible();
+    await expect(modelSheet.getByRole("switch")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    await toolsTrigger(page).click();
+    const sheet = page.getByRole("dialog", { name: "Tools" });
     await expect(sheet).toBeVisible();
 
     expect(await axeViolations(page, ["nested-interactive"])).toEqual([]);

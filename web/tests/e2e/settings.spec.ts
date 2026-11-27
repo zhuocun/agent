@@ -267,7 +267,7 @@ test.describe("settings — preferences", () => {
       (r) => r.url() === `${BE_URL}/api/preferences` && r.method() === "PUT",
     );
     // Blur commits the draft (onBlur → commitCustomInstructions).
-    await dialog.getByText("Appearance", { exact: true }).click();
+    await dialog.getByText("Workspace", { exact: true }).click();
     expect((await req).postDataJSON()).toMatchObject({
       customInstructions: "Always answer in metric units.",
     });
